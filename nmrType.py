@@ -24,11 +24,11 @@ import re
 import Image
 
 label_regex_token = '[a-zA-Z0-9_]+'
+anchor_basename_token = '[a-z]+'
 
 element_name_regex_token = '[a-zA-Z0-9]+'
 expression_regex_token = '[\^\_\{\}a-zA-Z0-9\*\/\(\)]+'
 
-tokens = (label_regex_token,label_regex_token)
 blanks_re = re.compile(r'\s\s+')
 
 def latex2image(text):
@@ -964,7 +964,7 @@ class PulseSequence:
 		self._validate_anchor_order(code)
 
 		bits = code.split()
-		disp_re = re.compile(r'^(\+)?(\d+|\d*\.\d+)@(%s)$' % label_regex_token)
+		disp_re = re.compile(r'^(\+)?(\d+|\d*\.\d+)@(%s)$' % label_regex_token) #anchor_name
 
 		cdisp = 0
 		for bit in bits:
@@ -981,16 +981,17 @@ class PulseSequence:
 				if rel:
 					raise ParsingError('in entry %s <b>"+"</b> signs in disp line are no longer used, please delete them' % bit)
 				cdisp = cdisp + disp
-				g.xcoor = cdisp #restricted to timed anchors only
+				g.xcoor = cdisp
 			else:
-				raise ParsingError('misformed entry %s in disp line' % bit)
+				raise ParsingError('could not parse entry %s in disp line ' \
+						'entries are expected in the following format: ' \
+						'<positive number>@<anchor name>' % bit)
 
 	def _parse_time(self):
 		#first lex the time line
 		#sequence must start with delay and end with anchor
 		code = self._code['time'].code
 		group_list = self._glist
-
 
 		self._validate_anchor_order(code)
 
@@ -1005,6 +1006,7 @@ class PulseSequence:
 			raise ParsingError('last item in the time line must be anchor, %s found' % bits[0])
 
 		items = []
+		#prev item name and type
 		pname = 'OriginAnchor'
 		ptype = 'anchor' #thats the implied zero time anchor
 		#group bits into anchors and delays
@@ -1066,7 +1068,14 @@ class PulseSequence:
 		head_group.anchor_list.append(a)
 		head_group.xcoor = 0
 
-		anchor_group_re = re.compile(r'^@%s(:?(?:,|-+)%s)*$' % tokens)
+		tokens = (label_regex_token,label_regex_token)
+		anchor_group_re = re.compile(r'^@%s(:?(:?,|-+)%s)*$' % tokens)
+
+		new_anchor_group_re = re.compile(r'^@(%s)(:?\[([1-9]\d*)\])$' % anchor_basename_token );
+		# @a--b,c5,sdfg345
+		# @a,@b1-5,@7
+		# @g1-7
+
 		at_re = re.compile(r'^@')
 		dash_re = re.compile(r'-+')
 
@@ -1077,20 +1086,29 @@ class PulseSequence:
 		for bit in bits:
 			orig = bit
 			m = anchor_group_re.match(bit)
-			if m:
+			mn = new_anchor_group_re.match(bit)
+			a_names = []
+			if mn:
+				a_base_name = mn.group(1)
+				a_anchor_count = int(mn.group(3))
+				for i in xrange(1,a_anchor_count+1):
+					a_name = '%s%d' % (a_base_name,i)
+					a_names.append(a_name)
+			elif m:
 				bit = at_re.sub('',bit)
 				bit = dash_re.sub(',',bit)
 				a_names = bit.split(',')
 
-				g = AnchorGroup()
-				self._glist.append(g)
-
-				for a_name in a_names:
-					a = Anchor(a_name)
-					a.group = g
-					g.anchor_list.append(a)
 			else:
-				raise ParsingError('misformed anchor group %s' % bit)
+				raise ParsingError('could not parse anchor group ' \
+						'definition %s' % bit)
+			g = AnchorGroup()
+			self._glist.append(g)
+
+			for a_name in a_names:
+				a = Anchor(a_name)
+				a.group = g
+				g.anchor_list.append(a)
 
 	def _parse_pfg(self):
 		code_table = self._code['pfg'].table
@@ -1330,8 +1348,9 @@ class PulseSequence:
 	def _parse_code(self):
 		#first parse anchor input
 		#keys ['disp' , 'phases', 'pfg', 'delays', 'acq', 'rf', 'pulses', 'decorations', 'time']
-		self._parse_anchor_groups()
-		self._parse_time()
+
+		self._parse_anchor_groups() #create list of anchor groups '_glist' & anchors 
+		self._parse_time() #populate _delay_list, set timed and timing delays to anchor groups
 		self._parse_disp()
 		self._parse_rf()
 		self._parse_pfg()
@@ -1717,6 +1736,9 @@ class PulseSequence:
 		(file,link) = self._create_output_file()
 		self._draw(file)
 		print link 
+
+	def typeVarian(self):
+		pass
 	
 	def __str__(self):
 		lines = []
@@ -1728,6 +1750,7 @@ seq = PulseSequence()
 try:
 	seq.read()
 	seq.draw()
+	seq.typeVarian()
 	sys.exit(0)
 except ParsingError,value:
 	print value

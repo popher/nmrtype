@@ -1,0 +1,32 @@
+anchors:       @a          @b[2]       @c[2]     @d[3]        @e     @f     @g     @h       @j[3]    @i[2]        @l
+disp:         6@a          6@b2        6@c2      6@d2       12@e   12@f    9@g    6@h      6@j2     6@i1        12@l  
+time:    rlx   @a  t1       @b2 t2      @c2 t3    @d2  T1a    @e T1b @f T12 @g T12 @h  d    @j2    d @i1-i2  aq   @l
+rf H:        90@a                                                        180@g                       acq@i2--------l   
+rf 13C:                   90@b2       90@c2     90@d2      180@e   90@f=p1               180@j2    90@i1=p2  
+pfg  z:                  g1@b1       g2@c1    g3@d1 g4@d3                              g5@j1 g6@j3     
+
+delay T1b: show_at=13C label=\frac{\Delta-\kappa t_1}{2}
+delay T1a: show_at=13C label=\frac{\Delta+\kappa t_1}{2}
+delay t2: show_at=13C label=\tau_2
+delay t1: show_at=13C label=\tau_1
+delay t3: show_at=13C label=\tau_3
+delay T12: show_at=13C label=\frac{t_1}{2}
+delay rlx: hide=true
+delay d: label=\delta
+
+rfchan 13C: label=^{13}C
+rfchan H: label=^1H
+pfgchan z: label=Grad.\ z
+
+pulse p1: phase=phi1 arrow=left 
+acq: phase=phi2 type=fid
+
+phase phi1: label=\phi_1 table=0,2
+phase phi2: label=\phi_2 table=1,3
+
+gradient g1: strength=70 label=g_1
+gradient g2: strength=-40 label=g_2
+gradient g3: strength=-20 label=g_3
+gradient g4: strength=-10 label=g_4
+gradient g5: strength=50,-30 label=g_5
+gradient g6: strength=-30,50 label=g_6
