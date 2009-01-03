@@ -1154,9 +1154,7 @@ class PulseSequence:
 		t = label_regex_token
 		pulse_re = re.compile(r'^(shp|90|180|lp|rect)@(%s)(=(%s))?$' \
 								% (t,t))
-		wpulse_re = re.compile(r'^(cpd|wp)@(%s)((,|-+)(%s))(=(%s))?$' \
-								% (t,t,t))
-		acq_re = re.compile(r'^acq@(%s)((,|-+)(%s))(=(%s))?$' \
+		w_rf_event_re = re.compile(r'^(acq|cpd|wp)@(%s)((,|-+)(%s))(=(%s))?$' \
 								% (t,t,t))
 
 		for ch in code_table.keys():
@@ -1170,8 +1168,7 @@ class PulseSequence:
 
 			for bit in bits:
 				pm = pulse_re.match(bit)
-				wm = wpulse_re.match(bit)
-				am = acq_re.match(bit)
+				wm = w_rf_event_re.match(bit)
 				if pm:
 					pulse_type = pm.group(1)
 					a_name = pm.group(2)
@@ -1181,22 +1178,22 @@ class PulseSequence:
 					p.anchor = a#anchor bug
 					a.add_event(p)
 
-				elif wm or am:
+				elif wm:
 					event = None
 					start_a_name = None
 					end_a_name = None
-					if wm:
-						pulse_type = wm.group(1)
-						start_a_name = wm.group(2)
-						end_a_name = wm.group(5)
-						pulse_name = wm.group(7)
-						event = self._procure_object('rf_wide_pulse',pulse_type,ch,name=pulse_name)
-					elif am:
-						start_a_name = am.group(1)
-						end_a_name = am.group(4)
-						acq_name = am.group(6)
-						event = self._procure_object('acq',ch,name=acq_name)
 
+					event_type = wm.group(1)
+					start_a_name = wm.group(2)
+					end_a_name = wm.group(5)
+					event_name = wm.group(7)
+
+					if event_type == 'acq':
+						event = self._procure_object('acq',ch,name=event_name)
+					else:
+						event = self._procure_object('rf_wide_pulse',
+										event_type,ch,
+										name=event_name)
 					a = self.get_anchor(start_a_name)
 					sa =  self.get_anchor(end_a_name)
 					event.anchor = a#anchor bug
@@ -1351,7 +1348,7 @@ class PulseSequence:
 
 		self._parse_anchor_groups() #create list of anchor groups '_glist' & anchors 
 		self._parse_time() #populate _delay_list, set timed and timing delays to anchor groups
-		self._parse_disp()
+		self._parse_disp() #parse disp line, add xcoor to anchors
 		self._parse_rf()
 		self._parse_pfg()
 
