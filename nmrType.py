@@ -361,6 +361,10 @@ class AnchorGroup:
 		a = self.get_anchor(a_name)
 		self.timing_anchor = a
 
+	def compile(self):
+		for a in self.anchor_list:
+			a.compile()
+
 	def _bootstrap_objects(self,ps_obj):
 		self.pulse_sequence = ps_obj
 		for a in self.anchor_list:
@@ -773,11 +777,13 @@ class Delay(PulseSequenceElement):
 		return '%s label=%s formula=%s' % (self.name,self.label,self.formula)
 
 	def calc_drawing_coordinates(self):
-	"""xcoor assigned as average xcoor of delay's start and end anchors"""
+		"""xcoor assigned as average xcoor of delay's start and end anchors
+		"""
 		self.xcoor = int((self.start_anchor.xcoor + self.end_anchor.xcoor)/2)
 
 	def validate(self):
-	"""validation of hide parameter"""
+		"""validation of hide parameter
+		"""
 		t = self.template
 		if t.__dict__.has_key('hide'):
 			val = t.hide
@@ -793,7 +799,8 @@ class Delay(PulseSequenceElement):
 					+ " Allowed values are 'true' and 'false'")
 
 	def draw_bounding_tics(self):
-	"""a tic mark will be drawn on a side where anchor has no attached events"""
+		"""a tic mark will be drawn on a side where anchor has no attached events
+		"""
 		start = self.start_anchor
 		end = self.end_anchor
 		if not start.has_event(self.show_at):
@@ -802,9 +809,9 @@ class Delay(PulseSequenceElement):
 			end.draw_tic(self.show_at)
 
 	def draw(self,draw_obj):
-	"""this routine is really drawing a delay label text, and does nothing if 
-	delay is "hidden"
-	"""
+		"""this routine is really drawing a delay label text, and does nothing if 
+		delay is "hidden"
+		"""
 
 		if self.is_hidden():
 			return
@@ -921,10 +928,11 @@ class PulseSequence:
 		self._draft_image_no = n + 1
 
 	def compile(self):
-	"""calculate all actual delays, pulse timing parameters
-	initialize all necessary data to output in Varian or Bruker format
-	"""
-		pass
+		"""calculate all actual delays, pulse timing parameters
+		initialize all necessary data to output in Varian or Bruker format
+		"""
+		for g in self._glist:
+			g.compile()
 
 	def _procure_object(self,type,*arg,**kwarg):
 	#unnamed objects won't be stored in tables
@@ -1458,17 +1466,17 @@ class PulseSequence:
 				'gradients':gradients,'cpd':cpd,'rfchan':rfchan,'pfgchan':pfgchan}
 
 	def _calc_drawing_coordinates(self):
-	"""Iterates through list of anchor groups, then in the
-	nested loop - through list of anchors and calculates drawing
-	dimensions for each anchor (i.e. dimensions of anchor elements).
-	calculate drawing coordinates of pegged events and delays
+		"""Iterates through list of anchor groups, then in the
+		nested loop - through list of anchors and calculates drawing
+		dimensions for each anchor (i.e. dimensions of anchor elements).
+		calculate drawing coordinates of pegged events and delays
 
-	details:
-	validate presence of timed anchor per group, presence of drawing offset
-	xcoor assigned to timed anchor, calculate dimensions of all anchors
-	then assign xcoor to all other anchors based on xcoor of timed anchor
-	and width of anchors
-	"""
+		details:
+		validate presence of timed anchor per group, presence of drawing offset
+		xcoor assigned to timed anchor, calculate dimensions of all anchors
+		then assign xcoor to all other anchors based on xcoor of timed anchor
+		and width of anchors
+		"""
 		gl = self._glist
 		for g in gl:
 			ta = g.timed_anchor
@@ -1785,7 +1793,7 @@ seq = PulseSequence()
 try:
 	seq.read()
 	seq.draw()
-	seq.typeVarian()
+	#seq.typeVarian()
 	sys.exit(0)
 except ParsingError,value:
 	print value
