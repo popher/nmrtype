@@ -1777,11 +1777,21 @@ class PulseSequence:
 		self._draw(file)
 		print link 
 
+	def compile(self):
+		"""Compile user-entered pulse sequence object into a new one
+		that can be converted into the instrument-specific code.
+		Compilation involves splitting anchor groups into new ones that
+		have only one anchor per group, calculation of all explicit delays,
+		merging channels where appropriate.
+		"""
+		compiled = new PulseSequence()
+		return compiled
+
 	def print_varian(self):
 		"""Creates varian pulse sequence file based on the pulse
 		sequence object
 		"""
-		pass
+		print "not implemented"
 	
 	def __str__(self):
 		lines = []
@@ -1793,7 +1803,8 @@ seq = PulseSequence()
 try:
 	seq.read()
 	seq.draw()
-	#seq.typeVarian()
+	compiled = seq.compile();
+	compiled .print_varian()
 	sys.exit(0)
 except ParsingError,value:
 	print value
