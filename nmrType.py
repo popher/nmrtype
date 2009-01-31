@@ -31,7 +31,13 @@ expression_regex_token = '[\^\_\{\}a-zA-Z0-9\*\/\(\)]+'
 
 blanks_re = re.compile(r'\s\s+')
 
+"""@package docstring
+nmrType creates pulse sequence image from a simple text markup
+"""
+
 def latex2image(text):
+	"""creates png files from latex source
+	"""
 	import os
 	from tempfile import NamedTemporaryFile
 	t = NamedTemporaryFile(mode='a+',dir=IMAGE_DIR)
@@ -216,7 +222,7 @@ class Anchor:
 		self.decoration = None
 		self.label = None
 		self.events = []
-		self.group = None
+		self.group = None #parent anchor group
 		self.xcoor = None
 		self.type = 'empty' #empty|pegging|normal read below
 		self.drawing_width = None #this works differently for anchors with
@@ -407,14 +413,13 @@ class Channel:
 #this class is populated at run time by function PulseSequence._procure_object
 #then before pulse sequence is drawn information from template can be copied 
 #to the instances as a temporary plug
+#or maybe not so temporary ...
 class PulseSequenceElementTemplate:
 	def __init__(self,type,name):
 		self._type = type #must match corresponding PulseSequenceElement._type
+		self.name = name
 		if type == 'pfg' or type == 'pfg_wide':
 			self.strength=100
-		self.name = name
-	pass
-
 
 class PulseSequenceElement:
 	def __init__(self):
@@ -444,6 +449,10 @@ class PulseSequenceElement:
 
 	def draw_pegged_pulse(self,draw_obj):
 		d = draw_obj
+
+		#calculate coordinates of four points
+		#defining the tetrangle
+
 		x1 = self.anchor.xcoor
 		y1 = self.ycoor
 
@@ -462,8 +471,6 @@ class PulseSequenceElement:
 		d.line(((x1,y1),(x2,y2)))
 		d.line(((x2,y2),(x3,y3)))
 		d.line(((x3,y3),(x4,y4)))
-
-		#d.rectangle(((x1,y1),(x2,y2)),fill=bg,outline=fg)
 
 		if self.label != None:
 			ycoor = int((2*y1+y3+y2)/4)
@@ -750,11 +757,11 @@ class Delay(PulseSequenceElement):
 	def __init__(self,name):
 		PulseSequenceElement.__init__(self)
 		self._type = 'delay'
-		self.length = None
+		self.length = None    #length of delay in seconds
 		self.name = name
 		self.label = None
 		self.formula = None
-		self.show_at = None
+		self.show_at = None #channel at which to draw delay
 		self.start_anchor = None
 		self.end_anchor = None
 		self.label_yoffset = 0
@@ -766,9 +773,11 @@ class Delay(PulseSequenceElement):
 		return '%s label=%s formula=%s' % (self.name,self.label,self.formula)
 
 	def calc_drawing_coordinates(self):
+	"""xcoor assigned as average xcoor of delay's start and end anchors"""
 		self.xcoor = int((self.start_anchor.xcoor + self.end_anchor.xcoor)/2)
 
 	def validate(self):
+	"""validation of hide parameter"""
 		t = self.template
 		if t.__dict__.has_key('hide'):
 			val = t.hide
@@ -784,6 +793,7 @@ class Delay(PulseSequenceElement):
 					+ " Allowed values are 'true' and 'false'")
 
 	def draw_bounding_tics(self):
+	"""a tic mark will be drawn on a side where anchor has no attached events"""
 		start = self.start_anchor
 		end = self.end_anchor
 		if not start.has_event(self.show_at):
@@ -792,6 +802,9 @@ class Delay(PulseSequenceElement):
 			end.draw_tic(self.show_at)
 
 	def draw(self,draw_obj):
+	"""this routine is really drawing a delay label text, and does nothing if 
+	delay is "hidden"
+	"""
 
 		if self.is_hidden():
 			return
@@ -821,6 +834,8 @@ class Delay(PulseSequenceElement):
 			return False
 
 class PulseSequence:
+	"""Toplevel pulse sequence object
+	"""
 	def __init__(self):
 		self._object_type_list = ('pfg','pfg_wide','rf_pulse','rf_wide_pulse',
 								'acq','phase')
@@ -904,6 +919,12 @@ class PulseSequence:
 		n = self._draft_image_no
 		self._image.save('draft%d.png' % n)
 		self._draft_image_no = n + 1
+
+	def compile(self):
+	"""calculate all actual delays, pulse timing parameters
+	initialize all necessary data to output in Varian or Bruker format
+	"""
+		pass
 
 	def _procure_object(self,type,*arg,**kwarg):
 	#unnamed objects won't be stored in tables
@@ -1114,8 +1135,7 @@ class PulseSequence:
 		code_table = self._code['pfg'].table
 		self._pfg_channel_order = self._code['pfg'].item_order
 		t = label_regex_token
-		pfg_re = re.compile(r'^(%s)@(%s)$' % (t,t))
-		pfg_wide_re = re.compile(r'^(%s)@(%s)(,|-+)(%s)$' % (t,t,t))
+		pfg_re = re.compile(r'^(%s)@(%s)((,|-+)(%s))?$' % (t,t,t))
 
 		for ch in code_table.keys():
 			
@@ -1127,23 +1147,21 @@ class PulseSequence:
 			bits = code.split()
 			for bit in bits:
 				m = pfg_re.match(bit)
-				wm = pfg_wide_re.match(bit)
 				if m:
 					pfg_name = m.group(1)
-					a_name = m.group(2)
-					a = self.get_anchor(a_name)
-					pfg = self._procure_object('pfg',pfg_name,ch)
-					a.add_event(pfg)
-				elif wm:
-					pfg_name = wm.group(1)
-					a1_name = wm.group(2)
-					a2_name = wm.group(4)
+					a1_name = m.group(2)
+					a2_name = m.group(4)
 					a1 = self.get_anchor(a1_name)
-					a2 = self.get_anchor(a2_name)
-					wpfg = self._procure_object('pfg_wide',pfg_name,ch)
-					wpfg.anchor = a1
-					wpfg.end_anchor = a2
-					a1.add_event(wpfg) #need to check whether end anchor has compatible event
+
+					pfg_event = None 
+					if a2_name:
+						a2 = self.get_anchor(a2_name)
+						pfg_event = self._procure_object('pfg_wide',pfg_name,ch)
+						pfg_event.end_anchor = a2
+					else:
+						pfg_event = self._procure_object('pfg',pfg_name,ch)
+					pfg_event.anchor = a1
+					a1.add_event(pfg_event) #need to check whether end anchor has compatible event
 				else:
 					raise ParsingError('misformed pfg statement %s' % bit)
 
@@ -1440,6 +1458,17 @@ class PulseSequence:
 				'gradients':gradients,'cpd':cpd,'rfchan':rfchan,'pfgchan':pfgchan}
 
 	def _calc_drawing_coordinates(self):
+	"""Iterates through list of anchor groups, then in the
+	nested loop - through list of anchors and calculates drawing
+	dimensions for each anchor (i.e. dimensions of anchor elements).
+	calculate drawing coordinates of pegged events and delays
+
+	details:
+	validate presence of timed anchor per group, presence of drawing offset
+	xcoor assigned to timed anchor, calculate dimensions of all anchors
+	then assign xcoor to all other anchors based on xcoor of timed anchor
+	and width of anchors
+	"""
 		gl = self._glist
 		for g in gl:
 			ta = g.timed_anchor
@@ -1722,11 +1751,17 @@ class PulseSequence:
 				pass
 
 	def read(self):
+		"""Reads nmrType pulse sequence source, parses it
+		and builds the pulse sequence object
+		"""
 		self._read_code()
 		self._parse_code()
 		self._bootstrap_objects()#purpose of this: make way up to pulse seq from objects
 
 	def draw(self):
+		"""Creates pulse sequence png drawing based
+		on fully initialized PulseSequence object
+		"""
 		self._init_drawing_parameters()#set basic drawing parameters
 		self._prepare_for_drawing()#determine sizes of all objects
 		self._init_drawing_object()#calculate channel y-offsets and image height
@@ -1734,7 +1769,10 @@ class PulseSequence:
 		self._draw(file)
 		print link 
 
-	def typeVarian(self):
+	def print_varian(self):
+		"""Creates varian pulse sequence file based on the pulse
+		sequence object
+		"""
 		pass
 	
 	def __str__(self):
