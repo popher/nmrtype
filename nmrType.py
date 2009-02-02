@@ -361,10 +361,6 @@ class AnchorGroup:
 		a = self.get_anchor(a_name)
 		self.timing_anchor = a
 
-	def compile(self):
-		for a in self.anchor_list:
-			a.compile()
-
 	def _bootstrap_objects(self,ps_obj):
 		self.pulse_sequence = ps_obj
 		for a in self.anchor_list:
@@ -571,7 +567,7 @@ class Pulse(PulseSequenceElement):
 		self.type = type
 		self.name = name
 		#extra stuff
-		self.length = None
+		self.length = 0 
 		self.power = None 
 		self.channel = channel
 		self.phase = None
@@ -678,12 +674,12 @@ class GradPulse(PulseSequenceElement):
 		self.name = name
 		self.label = None
 		self.channel = channel
-		self.duration = None
+		self.length = None
 		self.strength = 100
 		self.drawing_height = None
 		self._maxh = 0
 	def __str__(self):
-		return 'pfg %s %s %s %s' % (self.channel,self.name,self.duration,self.strength)
+		return 'pfg %s %s %s %s' % (self.channel,self.name,self.length,self.strength)
 	def calc_drawing_dimensions(self,maxh):
 		self.drawing_width = 12  #was 32
 		maxh = maxh*0.95 #gradient pulse must be shorter so that negative and positive fit
@@ -781,23 +777,6 @@ class Delay(PulseSequenceElement):
 		"""
 		self.xcoor = int((self.start_anchor.xcoor + self.end_anchor.xcoor)/2)
 
-	def validate(self):
-		"""validation of hide parameter
-		"""
-		t = self.template
-		if t.__dict__.has_key('hide'):
-			val = t.hide
-			false = re.compile(r'^false$',re.IGNORECASE)
-			true = re.compile(r'^true$',re.IGNORECASE)
-			if false.match(val):
-				self.template.hide = False
-			elif true.match(val):
-				self.template.hide = True
-			else:
-				raise ParsingError("Problem with value of parameter 'hide'"\
-					+'in delay %s.' % self.name \
-					+ " Allowed values are 'true' and 'false'")
-
 	def draw_bounding_tics(self):
 		"""a tic mark will be drawn on a side where anchor has no attached events
 		"""
@@ -854,6 +833,14 @@ class PulseSequence:
 		self._delay_list = [] 
 		self._decoration_list = []
 		self._draft_image_no = 0
+
+		head_group = AnchorGroup()#special start anchor group with null name and offset
+		a = Anchor(None) #special unnamed anchor
+		head_group.timed_anchor = a      #anchor with interval before
+		head_group.timing_anchor = a     #anchor with interval after
+		head_group.anchor_list.append(a)
+		head_group.xcoor = 0
+		self._glist = [head_group]
 
 	def get_rf_channel(self,name):
 	#todo here is a catch - only rf channels are returned
@@ -927,12 +914,23 @@ class PulseSequence:
 		self._image.save('draft%d.png' % n)
 		self._draft_image_no = n + 1
 
-	def compile(self):
-		"""calculate all actual delays, pulse timing parameters
-		initialize all necessary data to output in Varian or Bruker format
+	def create_anchor_group(self,a_names = []):
+		"""creates new anchor group, populates it 
+		with anchors named as in a_names array
+		returns newly created anchor group
 		"""
-		for g in self._glist:
-			g.compile()
+		g = AnchorGroup()
+		self._glist.append(g)
+		for a_name in a_names:
+			a = Anchor(a_name)
+			a.group = g
+			g.anchor_list.append(a)
+		return g
+
+	def get_anchor_groups(self):
+		"""returns list of anchor groups
+		"""
+		return self._glist;
 
 	def _procure_object(self,type,*arg,**kwarg):
 	#unnamed objects won't be stored in tables
@@ -1017,6 +1015,14 @@ class PulseSequence:
 						'<positive number>@<anchor name>' % bit)
 
 	def _parse_time(self):
+		"""parses code of "time" line
+
+		builds list of delays, to anchor groups assigns: post-delay, 
+		timed and timing anchors
+
+		validation: anchor order, start with delay, end with anchor, anchors
+		and delays must alternate, delays and anchors subject to pattern matching
+		"""
 		#first lex the time line
 		#sequence must start with delay and end with anchor
 		code = self._code['time'].code
@@ -1089,13 +1095,11 @@ class PulseSequence:
 					c_group.set_timing_anchor(a1_name)
 
 	def _parse_anchor_groups(self):
+		"""parses text of "anchors" line
+		creates list of anchor groups which themselves contain 
+		list of their anchors
+		"""
 		code = self._code['anchors'].code
-		head_group = AnchorGroup()#special start anchor group with null name and offset
-		a = Anchor(None) #special unnamed anchor
-		head_group.timed_anchor = a      #anchor with interval before
-		head_group.timing_anchor = a     #anchor with interval after
-		head_group.anchor_list.append(a)
-		head_group.xcoor = 0
 
 		tokens = (label_regex_token,label_regex_token)
 		anchor_group_re = re.compile(r'^@%s(:?(:?,|-+)%s)*$' % tokens)
@@ -1108,7 +1112,6 @@ class PulseSequence:
 		at_re = re.compile(r'^@')
 		dash_re = re.compile(r'-+')
 
-		self._glist = [head_group]
 		group_list = self._glist
 
 		bits = code.split()
@@ -1131,13 +1134,8 @@ class PulseSequence:
 			else:
 				raise ParsingError('could not parse anchor group ' \
 						'definition %s' % bit)
-			g = AnchorGroup()
-			self._glist.append(g)
 
-			for a_name in a_names:
-				a = Anchor(a_name)
-				a.group = g
-				g.anchor_list.append(a)
+			self.create_anchor_group(a_names)
 
 	def _parse_pfg(self):
 		code_table = self._code['pfg'].table
@@ -1174,6 +1172,8 @@ class PulseSequence:
 					raise ParsingError('misformed pfg statement %s' % bit)
 
 	def _parse_rf(self):
+		"""parses the main part of pulse sequence record: channel events
+		"""
 		code_table = self._code['rf'].table
 		self._rf_channel_order = self._code['rf'].item_order
 
@@ -1243,7 +1243,7 @@ class PulseSequence:
 					if e._type in type_map[type] and e.name == name:
 						o_list.append(e)
 		if len(o_list) == 0:
-			ParsingError('no %s named %s found in the pulse sequence' % (type,name))
+			raise ParsingError('no %s named %s found in the pulse sequence' % (type,name))
 		return o_list
 
 	def _get_objects(self,type,name):
@@ -1260,7 +1260,51 @@ class PulseSequence:
 		else:
 			raise '_get_objects not implemented for type %s' % type
 
-	def _parse_variables(self,type,allowed_keys):
+	def _typecast_value(self,val_input,val_type):
+		"""reads string representation of value
+		and converts it to value of prescribed type
+		todo: incorporate input validation here
+		
+		allowed types are int,float,bool and <type>-list, where <type>
+		is one of the supported base types
+		in case it is <type>-list list of values is returned when it's
+		really a list, and first value when list has only one item
+		"""
+		if val_type == 'int':
+			return int(val_input)
+		elif val_type == 'float':
+			return float(val_input)
+		elif val_type == 'str':
+			return val_input
+		elif val_type == 'bool':
+			true_re = re.compile(r'^true$',re.IGNORECASE)
+			false_re = re.compile(r'^false',re.IGNORECASE)
+			if true_re.match(val_input):
+				return True
+			if false_re.match(val_input):
+				return False
+			else:
+				raise ParsingError('cannot parse boolean value from %s' % val_input)
+		else:
+			list_re = re.compile(r'^(.*?)-list$')
+			m = list_re.match(val_type)
+			if (m):
+				val_type = m.group(1)
+				val_list = val_input.split(',')
+				typecasted_val_list = []
+				for v in val_list:
+					typecasted_val = self._typecast_value(v,val_type)
+					typecasted_val_list.append(typecasted_val)
+				if length(typecasted_val_list == 1):
+					return typecasted_val_list[0]
+				else:
+					return typecasted_val_list
+
+	def _parse_variables(self,type,key_table,key_aliases={}):
+
+		for key in key_aliases.keys():
+			if key not in key_table.keys():
+				raise 'internal error: aliases and keys dont agree for type %s' % type
 
 		table = self._code[type].table
 		for obj_name in table.keys():
@@ -1273,33 +1317,19 @@ class PulseSequence:
 					obj.template = PulseSequenceElementTemplate(type,obj_name)
 
 				for key in par.keys():
-					if key in allowed_keys:
-						obj.__dict__[key] = par[key]
-						obj.template.__dict__[key] = par[key]
-					else:
-						raise ParsingError('key \'%s\' not allowed for %s' % (key,type))
-
-	def _parse_positive_percent(self,input,name):
-		try:
-			input = float(input)
-			if input > 100:
-				raise
-			if input < 0:
-				raise
-		except:
-			raise ParsingError('%s value must be a real number from 0 to 100' % name)
-		return input
-
-	def _parse_cpd_height_values(self):
-		wp = self.rf_wide_pulse_table.values()
-		for p in wp:
-			if p.template and p.template.__dict__.has_key('h1'):
-				if p.template.h1 != None:
-						p.template.h1 = self._parse_positive_percent(p.template.h1,'wide pulse h1 parameter')	
-						if p.template.__dict__.has_key('h2') and p.template.h2 != None:
-							p.template.h2 = self._parse_positive_percent(p.template.h2,'wide pulse h2 parameter')
-				elif p.template.__dict__.has_key('h2') and p.template.h2 != None:
-					raise ParsingError('h2 in wide pulse parameters must be used together with h1')
+					var_type = ''
+					var_input = par[key]
+					if key not in key_table.keys():
+						for try_key,try_values in key_aliases.items():
+							if key in try_values:
+								key = try_key
+								break
+						if key not in key_table.keys():
+							raise ParsingError('key \'%s\' not allowed for %s' % (key,type))
+					var_type = key_table[key]
+					var_value = self._typecast_value(var_input,var_type)
+					obj.__dict__[key] = var_value 
+					obj.template.__dict__[key] = var_value 
 
 	def _parse_gradient_values(self):
 		pfg = self.pfg_table.values()
@@ -1307,28 +1337,14 @@ class PulseSequence:
 		for p in pfg + wpfg:
 			val = p.template.strength
 			try:
-				p.template.strength = float(val)
-			except:
-				bits = val.split(',')
-				msg = "don't understand strength value %s of gradient pulse %s" \
-						% (val,p.name)
-				msg = msg + ': strength must be a floating point number or a list of two numbers'
-
-				num_val = len(bits)
-				if num_val != 2:
-					raise ParsingError(msg)
-
-				values = []
-				for b in bits:
-					try:
-						values.append(float(b))
-					except:
-						raise ParsingError(msg)
+				iter(val)
 				p.alternated = True
-				p.template.strength = values
-			max_val = 0
+			except:
+				pass
 
+			max_val = 0
 			if p.alternated:
+				print p.template.strength
 				if abs(p.template.strength[0]) > abs(p.template.strength[1]):
 					max_val = abs(p.template.strength[0])
 				else:
@@ -1363,12 +1379,10 @@ class PulseSequence:
 				elif len(phases) > 1:
 					raise 'internal error: too many phase objects named %s' % p.phase
 
-	def _validate_delay_values(self):
-		delays = self.get_delays()
-		for d in delays:
-			d.validate()
-
 	def _parse_code(self):
+		"""main hand-typed code parsing funtion
+		calls multiple specialized parsing routines
+		"""
 		#first parse anchor input
 		#keys ['disp' , 'phases', 'pfg', 'delays', 'acq', 'rf', 'pulses', 'decorations', 'time']
 
@@ -1378,26 +1392,39 @@ class PulseSequence:
 		self._parse_rf()
 		self._parse_pfg()
 
-		self._parse_variables('delays',('label','formula','show_at','hide','label_yoffset'))
-		self._validate_delay_values()
+		delay_parameters = { 'length':'float', 'label':'str', 'formula':'str',
+					'show_at':'str', 'hide':'bool', 'label_yoffset':'int'}
+		delay_aliases = {'length':['t']}
+		self._parse_variables('delays',delay_parameters,delay_aliases)
 
-		self._parse_variables('pulses',('phase','quad','arrow','label'))
-		self._parse_variables('acq',('phase','type'))
+		self._parse_variables('pulses',{'phase':'str',
+						'quad':'str',
+						'arrow':'str',
+						'label':'str',
+						'length':'float'})
 
-		self._parse_variables('gradients',('duration','strength','type','label'))
+		self._parse_variables('acq',{'phase':'str',
+						'type':'str'})
+
+		self._parse_variables('gradients',{'length':'float',
+						'strength':'float',
+						'type':'str',
+						'label':'str'})
 		self._parse_gradient_values()#for echo-antiecho type gradients 
 									 #(comma separated strength values)
 									 #convert string values to numerical values
 
-		self._parse_variables('cpd',('label','h1','h2'))
-		self._parse_cpd_height_values()#convert h1 and h2 into numerical values
+		self._parse_variables('cpd',{'label':'str',
+						'h1':'float',
+						'h2':'float'})
 
 		self._init_phases()
-		self._parse_variables('phases',('label','table'))
+		self._parse_variables('phases',{'label':'str',
+						'table':'int-list'})
 		self._attach_phases_to_pulses()
 
-		self._parse_variables('rfchan',('label'))
-		self._parse_variables('pfgchan',('label'))
+		self._parse_variables('rfchan',{'label':'str'})
+		self._parse_variables('pfgchan',{'label':'str'})
 
 		self._parse_decorations()#decorations are contained in DecorLineList object
 
@@ -1777,15 +1804,21 @@ class PulseSequence:
 		self._draw(file)
 		print link 
 
-	def compile(self):
+	def compile(self,src):
 		"""Compile user-entered pulse sequence object into a new one
 		that can be converted into the instrument-specific code.
 		Compilation involves splitting anchor groups into new ones that
 		have only one anchor per group, calculation of all explicit delays,
 		merging channels where appropriate.
+
+		src - source pulse sequence object
 		"""
-		compiled = new PulseSequence()
-		return compiled
+		i = 0
+		groups = iter(src.get_anchor_groups())
+		pg = groups.next()
+		for g in groups:
+			dly = pg.post_delay.length
+			pg = g
 
 	def print_varian(self):
 		"""Creates varian pulse sequence file based on the pulse
@@ -1803,8 +1836,10 @@ seq = PulseSequence()
 try:
 	seq.read()
 	seq.draw()
-	compiled = seq.compile();
-	compiled .print_varian()
+	compiled = PulseSequence();
+	compiled.compile(seq);
+	#compiled.check_safety();
+	compiled.print_varian()
 	sys.exit(0)
 except ParsingError,value:
 	print value
