@@ -257,6 +257,15 @@ class Anchor:
 										+' some events are attached to this anchor only, others to '\
 										+'this one and some other one - not allowed')
 
+	def time(self):
+		"""calculate python expression for anchor offset
+		max( [e.derive_anchor_toffset() for e in self.anchor_list] )
+		this expression is to be evaluated to yield varian or bruker source code
+		the formula is to be substracted from the timing delay
+		so that all delay expressions could be correctly created
+		"""
+		pass
+
 	def has_event(self,channel):
 		for e in self.events:
 			if e.channel == channel:
@@ -346,6 +355,10 @@ class AnchorGroup:
 		self.timing_anchor = None #anchor after which post_delay is to be applied
 		self.post_delay = None
 		self.xcoor = None
+
+	def time(self):
+		for a in self.anchor_list:
+			a.time() #calculate anchor toffset
 
 	def get_anchor(self,a_name):
 		for a in self.anchor_list:
@@ -561,17 +574,22 @@ class Phase(PulseSequenceElement):
 
 
 class Pulse(PulseSequenceElement):
+	"""class for RF pulse
+	"""
 	def __init__(self,type,channel,name=None):
 		PulseSequenceElement.__init__(self)
 		self._type = 'rf_pulse'
 		self.type = type
 		self.name = name
 		#extra stuff
-		self.length = 0 
+		self.length = None 
 		self.power = None 
 		self.channel = channel
 		self.phase = None
 		self.label = None
+		self.edge_align = 'center' #(left|right|center) - "edge" of pulse to be anchored
+		self.post_gating = 0 #two gating delays
+		self.pre_gating = 0 
 
 	def __str__(self):
 		out = self.type
@@ -1265,9 +1283,9 @@ class PulseSequence:
 		and converts it to value of prescribed type
 		todo: incorporate input validation here
 		
-		allowed types are int,float,bool and <type>-list, where <type>
+		allowed types are int,float,bool and &lt;type&gt;-list, where &lt;type&gt;
 		is one of the supported base types
-		in case it is <type>-list list of values is returned when it's
+		in case it is &lt;type&gt;-list list of values is returned when it's
 		really a list, and first value when list has only one item
 		"""
 		if val_type == 'int':
@@ -1401,7 +1419,9 @@ class PulseSequence:
 						'quad':'str',
 						'arrow':'str',
 						'label':'str',
-						'length':'float'})
+						'length':'float',
+						'edge_align':'str',
+						})
 
 		self._parse_variables('acq',{'phase':'str',
 						'type':'str'})
@@ -1409,6 +1429,7 @@ class PulseSequence:
 		self._parse_variables('gradients',{'length':'float',
 						'strength':'float',
 						'type':'str',
+						'edge_align':'str',
 						'label':'str'})
 		self._parse_gradient_values()#for echo-antiecho type gradients 
 									 #(comma separated strength values)
@@ -1813,11 +1834,11 @@ class PulseSequence:
 
 		src - source pulse sequence object
 		"""
-		i = 0
 		groups = iter(src.get_anchor_groups())
 		pg = groups.next()
 		for g in groups:
-			dly = pg.post_delay.length
+			dly = pg.post_delay
+			g.time()#calculate anchor offset expression within each anchor
 			pg = g
 
 	def print_varian(self):
