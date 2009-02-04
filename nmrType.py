@@ -1926,6 +1926,7 @@ class PulseSequence:
 		calc_post_dly = False
 		update_pre_dly = True
 		for a in g.anchor_list:
+			#pre- and post- anchor group delay calculation
 			if a == g.timed_anchor:
 				update_pre_dly = False
 				pre_e = E('sub',pre_e, a.pre_span)
@@ -1936,15 +1937,14 @@ class PulseSequence:
 			if a == g.timing_anchor:
 				post_e = E('add',post_e, a.post_span)
 				calc_post_dly = True
-			#go through anchors in group
-			#
-			#if not reached timed anchor substract lengths of anchors from dly
-			#
-			#once get to timed anchor substract only pre_length
-			#
-			#between timed and timing anchors skip 
-			#
-			#once get to timing anchor start collecting expression - get post length
+
+			#create new anchor, copy events that can be copied
+			#create new events in place of old ones
+			if a != g.anchor_list[-1]:
+				#add post delay to all events but last
+				#e.g grad pulses get recovery delays
+				#not sure yet how to deal with pulse gating delays
+				pass
 
 		pre_dly.expr = pre_e
 		return post_e
@@ -1974,6 +1974,12 @@ class PulseSequence:
 		src - source pulse sequence object
 		self - compiled pulse sequence object
 		"""
+		import copy
+		src = copy.deepcopy(src)
+
+		#somehow bootstrap wide events to end_anchors
+		#so that things like decoff(); could be treated properly
+
 		self._compile_cdelay_id = 0
 		groups = iter(src.get_anchor_groups())
 		pg = groups.next()
@@ -1990,6 +1996,10 @@ class PulseSequence:
 			print g
 			print pre_delay_expr.get_eqn_str()
 			pg = g
+
+		#reassign channels where necessary 
+		#this will require inserting frequency switch anchors
+		#have to do this in the middle of official delays
 
 
 	def print_varian(self):
