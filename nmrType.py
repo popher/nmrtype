@@ -216,6 +216,70 @@ class Decoration:
 	def draw(self,draw_object):
 		pass
 
+class N:
+	"""class for numbers to use in building delay expressions
+	"""
+	def __init__(self,value):
+		if value == 'pi':
+			self._val = 3.14159265
+		elif isinstance(value, (int, long, float)):
+			self._val = float(value)
+		else:
+			raise "internal error: initializing class N with unexpected value"
+	def get_type(self):
+		return 'num'
+	def get_eqn_str(self):
+		return '%f' % self._val
+
+class E:
+	"""delay expression class
+	holds tree representation of formula for calulating delays
+
+	e = new DelExp('set',delay1) #one operand!
+	e = new DelExp('add',delay1,pulse2,pulse3) #multiple operands
+	e = new DelExp('sub',delay1,delay2) #note two operands!
+	e = new DelExp('div',delay1,delay2) #note two operands!
+	e = new DelExp('max',delay1,delay2,...) #multiple operands
+	"""
+	def __init__(self,type,*arg):
+		ok_types = ('add','sub','max','set','div')
+		ok_operands = ('delay','rf_wide_pulse','rf_pulse','pfg','expression','num','acq')
+		if type not in ok_types:
+			raise 'internal error: unknown delay expression type %s' % type
+		if (type == 'sub' or type == 'div') and len(arg) != 2:
+			raise 'internal error: sub expression requires two operands'
+		if type == 'set' and len(arg) != 1:
+			raise 'internal error: set expression requires one operand'
+
+		for op in arg:
+			if op.get_type() not in ok_operands:
+				raise 'internal error: illegal operand type %s' % op.get_type()
+		self._operator = type
+		self._operands = arg
+
+	def get_type(self):
+		return 'expression';
+
+	def get_eqn_str(self):
+		op = self._operator
+		args = self._operands
+		tokens = []
+		for arg in args:
+			tokens.append(arg.get_eqn_str())
+		if op == 'max':
+			return 'max(' + ','.join(tokens) + ')'
+		elif op == 'add':
+			return '+'.join(tokens)
+		elif op == 'sub':
+			return tokens[0] + '-' + tokens[1] 
+		elif op == 'set':
+			return tokens[0]
+		elif op == 'div':
+			return '(' + tokens[0] + ')/(' + tokens[1] + ')'
+		else:
+			raise 'internal error: unknown operator %s' % op
+		
+
 class Anchor:
 	def __init__(self,name):
 		self.name = name
@@ -258,13 +322,17 @@ class Anchor:
 										+'this one and some other one - not allowed')
 
 	def time(self):
-		"""calculate python expression for anchor offset
-		max( [e.derive_anchor_toffset() for e in self.anchor_list] )
-		this expression is to be evaluated to yield varian or bruker source code
-		the formula is to be substracted from the timing delay
-		so that all delay expressions could be correctly created
+		"""initialize two expression objects per anchor
+		that will be used to calculate equations for delays between events
+		one for pre-anchor dead time and one for post-anchor dead time
+
+		limitation only assumes that all event.anchor_align = 'center'
 		"""
-		pass
+		length = E('max',*(self.events))
+		half = E('div',length,N(2))
+		self.pre_span = half 
+		self.post_span = half 
+		self.span = length
 
 	def has_event(self,channel):
 		for e in self.events:
@@ -440,8 +508,12 @@ class PulseSequenceElement:
 		self.drawing_width = 0
 		self.drawing_height = 0
 		self.template = None #instance of PulseSequenceElementTemplate
+		self.expr = None
 	def __str__(self):
 		return self._type
+
+	def get_eqn_str(self):
+		return self.name
 
 	def load_template_data(self):#temporary ? plug
 		if self.template != None:
@@ -647,6 +719,9 @@ class WidePulse(Pulse):
 		self.h2 = None
 		self.maxh = None
 
+	def get_eqn_str(self):
+		return 'cpd toggle'
+
 	def calc_drawing_dimensions(self,maxh):
 		self.drawing_width = self.end_anchor.xcoor - self.anchor.xcoor
 		if self.type in ('fid','echo'):
@@ -677,6 +752,9 @@ class Acquisition(WidePulse):
 		self.type = 'fid' 
 		self.end_anchor = None
 		#display type: 'fid' or 'echo'
+		
+	def get_eqn_str(self):
+		return 'rcvr toggle'
 
 	def draw(self,draw_obj):
 		if self.type == 'fid':
@@ -841,6 +919,9 @@ class PulseSequence:
 	"""Toplevel pulse sequence object
 	"""
 	def __init__(self):
+		"""among other things initializes head anchor group
+		but does not create first delay
+		"""
 		self._object_type_list = ('pfg','pfg_wide','rf_pulse','rf_wide_pulse',
 								'acq','phase')
 		for ot in self._object_type_list:
@@ -859,6 +940,9 @@ class PulseSequence:
 		head_group.anchor_list.append(a)
 		head_group.xcoor = 0
 		self._glist = [head_group]
+
+	def add_delay(self,dly):
+		self._delay_list.append(dly)
 
 	def get_rf_channel(self,name):
 	#todo here is a catch - only rf channels are returned
@@ -1217,6 +1301,8 @@ class PulseSequence:
 					pulse_type = pm.group(1)
 					a_name = pm.group(2)
 					pulse_name = pm.group(4)
+					if not pulse_name:
+						pulse_name = 'p%s_%s' % (ch,pulse_type)
 					p = self._procure_object('rf_pulse',pulse_type,ch,name=pulse_name)
 					a = self.get_anchor(a_name)
 					p.anchor = a#anchor bug
@@ -1825,21 +1911,86 @@ class PulseSequence:
 		self._draw(file)
 		print link 
 
+	def _compile_anchor_group(self,g,pre_dly):
+		"""split anchor group into new groups with exactly one anchor each
+		insert delays between anchor groups, update expression in the pre_dly
+		return new delay expression to be substracted from timing 
+		delay of the following anchor group
+		"""
+		g.time() #calculate pre_length and post_length of each anchor 
+		         #so that events fit exactly
+
+		pre_e = pre_dly.expr
+		post_e = E('set',N(0))
+
+		calc_post_dly = False
+		update_pre_dly = True
+		for a in g.anchor_list:
+			if a == g.timed_anchor:
+				update_pre_dly = False
+				pre_e = E('sub',pre_e, a.pre_span)
+			if update_pre_dly:
+				pre_e = E('sub',pre_e, a.span)
+			if calc_post_dly:
+				post_e = E('add',post_e, a.span)
+			if a == g.timing_anchor:
+				post_e = E('add',post_e, a.post_span)
+				calc_post_dly = True
+			#go through anchors in group
+			#
+			#if not reached timed anchor substract lengths of anchors from dly
+			#
+			#once get to timed anchor substract only pre_length
+			#
+			#between timed and timing anchors skip 
+			#
+			#once get to timing anchor start collecting expression - get post length
+
+		pre_dly.expr = pre_e
+		return post_e
+			
+
+
+	def _compile_add_delay(self):
+		"""creates delay with auto-generated name, appends it to the delay list
+		returns the newly created delay
+		"""
+		cid = self._compile_cdelay_id
+		dly = Delay('auto-delay-%d' % cid)
+		self.add_delay(dly)
+		self._compile_cdelay_id = cid + 1
+		return dly
+
 	def compile(self,src):
-		"""Compile user-entered pulse sequence object into a new one
+		"""Compile user-entered pulse sequence object src into a new one (self)
 		that can be converted into the instrument-specific code.
 		Compilation involves splitting anchor groups into new ones that
 		have only one anchor per group, calculation of all explicit delays,
 		merging channels where appropriate.
 
+		NOTE: delays in compiles pulse sequence only have name (automatic) 
+		and expr - expression set
+
 		src - source pulse sequence object
+		self - compiled pulse sequence object
 		"""
+		self._compile_cdelay_id = 0
 		groups = iter(src.get_anchor_groups())
 		pg = groups.next()
+		zero_dly = Delay('zero')
+		zero_dly.length = 0
+
+		pre_dly_expr = E('set',zero_dly)
+
+		self._compile_cdly_id = 0
 		for g in groups:
-			dly = pg.post_delay
-			g.time()#calculate anchor offset expression within each anchor
+			dly = self._compile_add_delay()
+			dly.expr = E('sub',pg.post_delay,pre_dly_expr)
+			pre_delay_expr = self._compile_anchor_group(g,dly) #adds delays and anchor groups
+			print g
+			print pre_delay_expr.get_eqn_str()
 			pg = g
+
 
 	def print_varian(self):
 		"""Creates varian pulse sequence file based on the pulse
@@ -1856,7 +2007,7 @@ class PulseSequence:
 seq = PulseSequence()
 try:
 	seq.read()
-	seq.draw()
+	#seq.draw()
 	compiled = PulseSequence();
 	compiled.compile(seq);
 	#compiled.check_safety();
