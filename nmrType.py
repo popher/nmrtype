@@ -5,8 +5,8 @@ import os
 #including slash in the end use blank if all is in paths
 #settings for 1&1
 latex_dir = '/usr/local/texlive/2008/bin/x86_64-linux/'
-IMAGE_DIR = '/var/www/vhosts/default/htdocs/nmrwiki/images/NMRPulse' #where to put image files
-IMAGE_DIR_URL = 'http://wikichemistry.org/nmrwiki/images/NMRPulse'
+IMAGE_DIR = '/var/www/vhosts/default/htdocs/nmrwiki/wiki/images/NMRPulse' #where to put image files
+IMAGE_DIR_URL = 'http://nmrwiki.org/wiki/images/NMRPulse'
 from Numeric import *
 
 #including slash in the end use blank if all is in paths
@@ -235,15 +235,16 @@ class E:
 	"""delay expression class
 	holds tree representation of formula for calulating delays
 
-	e = new DelExp('set',delay1) #one operand!
-	e = new DelExp('add',delay1,pulse2,pulse3) #multiple operands
-	e = new DelExp('sub',delay1,delay2) #note two operands!
-	e = new DelExp('div',delay1,delay2) #note two operands!
-	e = new DelExp('max',delay1,delay2,...) #multiple operands
+	e = E('set',delay1) #one operand!
+	e = E('add',delay1,pulse2,pulse3) #multiple operands
+	e = E('sub',delay1,delay2) #note two operands!
+	e = E('div',delay1,delay2) #note two operands!
+	e = E('max',delay1,delay2,...) #multiple operands
 	"""
 	def __init__(self,type,*arg):
 		ok_types = ('add','sub','max','set','div')
-		ok_operands = ('delay','rf_wide_pulse','rf_pulse','pfg','expression','num','acq')
+		ok_operands = ('delay','rf_wide_pulse','rf_pulse','pfg'
+				,'expression','num','acq','wide_event_toggle')
 		if type not in ok_types:
 			raise 'internal error: unknown delay expression type %s' % type
 		if (type == 'sub' or type == 'div') and len(arg) != 2:
@@ -262,16 +263,15 @@ class E:
 
 	def get_eqn_str(self):
 		op = self._operator
-		args = self._operands
 		tokens = []
-		for arg in args:
+		for arg in self._operands:
 			tokens.append(arg.get_eqn_str())
 		if op == 'max':
 			return 'max(' + ','.join(tokens) + ')'
 		elif op == 'add':
 			return '+'.join(tokens)
 		elif op == 'sub':
-			return tokens[0] + '-' + tokens[1] 
+			return tokens[0] + '-(' + tokens[1] + ')'
 		elif op == 'set':
 			return tokens[0]
 		elif op == 'div':
@@ -302,10 +302,13 @@ class Anchor:
 		for e in self.events:
 			e._bootstrap(ps_obj)
 
-	def _determine_type(self):
+	def determine_type(self):
+		"""determine type of anchor "normal|pegging"
+		assign corresponding value of type variable
+		"""
 		types = {}
 		for e in self.events:
-			if e._type in ('rf_pulse','pfg'):
+			if e._type in ('rf_pulse','pfg','wide_event_toggle'):
 				types['normal'] = 1
 			elif e._type in ('acq','rf_wide_pulse','pfg_wide'):
 				types['pegging'] = 1
@@ -342,7 +345,7 @@ class Anchor:
 
 	def calc_drawing_dimensions(self,maxh):
 
-		self._determine_type()
+		self.determine_type()
 
 		w = 0
 		if self.type == 'normal':
@@ -391,7 +394,7 @@ class Anchor:
 			if not self._are_events_compatible(event,self.events[0]):
 				err_text = 'event %s of %s type ' % (n1,t1)\
 						+ 'cannot be added to anchor @%s' % self.name \
-						+ 'because it already contains ' \
+						+ ' because it already contains ' \
 						+ 'event %s of %s type' % (n2,t2)
 				raise ParsingError(err_text)	
 		self.events.append(event)
@@ -503,12 +506,25 @@ class PulseSequenceElementTemplate:
 			self.strength=100
 
 class PulseSequenceElement:
+	"""base class for pulse sequence elements: delays, phases, pulses, etc
+
+	instant events have reference to carrying anchor (except phases)
+	wide events have an additional reference to end_anchor
+
+	currently (Feb 14 2009) anchors that are referenced by end_anchor
+	do not themseleves point to wide events
+
+	however at compile stage for production of code WideEventOnOff elements are
+	inserted to anchors at the beginning and the end of wide events
+	"""
 	def __init__(self):
 		self.anchor = None
 		self.drawing_width = 0
 		self.drawing_height = 0
 		self.template = None #instance of PulseSequenceElementTemplate
 		self.expr = None
+		self.name = None
+		self.channel = None
 	def __str__(self):
 		return self._type
 
@@ -644,6 +660,24 @@ class Phase(PulseSequenceElement):
 	def __str__(self):
 		return self.name + ' ' + self.label + ' ' + self.table
 
+class WideEventToggle(PulseSequenceElement):
+	"""class for turning on/off wide event
+	not used for drawing output, only used for compilation into code
+
+	this type of event does not have channel assigned - maybe 
+	get_channel() getter is needed for PulseSequenceElement
+	so that channel will be read from the wide event iself?
+	"""
+	def __init__(self,type,event):
+		PulseSequenceElement.__init__(self)
+		self._type = 'wide_event_toggle'
+		if type not in ('on','off'):
+			raise 'internal error: unknown type %s of WideEventToggle' % type
+		self.type = type
+		self.event = event
+
+	def get_eqn_str(self):
+		return self.event.get_eqn_str()
 
 class Pulse(PulseSequenceElement):
 	"""class for RF pulse
@@ -720,7 +754,7 @@ class WidePulse(Pulse):
 		self.maxh = None
 
 	def get_eqn_str(self):
-		return 'cpd toggle'
+		return 'cpd_toggle'
 
 	def calc_drawing_dimensions(self,maxh):
 		self.drawing_width = self.end_anchor.xcoor - self.anchor.xcoor
@@ -754,7 +788,7 @@ class Acquisition(WidePulse):
 		#display type: 'fid' or 'echo'
 		
 	def get_eqn_str(self):
-		return 'rcvr toggle'
+		return 'rcvr_toggle'
 
 	def draw(self,draw_obj):
 		if self.type == 'fid':
@@ -866,7 +900,9 @@ class Delay(PulseSequenceElement):
 		#end_anchor assinged in PulseSequence._attach_delays_to_anchors()
 
 	def __str__(self):
-		return '%s label=%s formula=%s' % (self.name,self.label,self.formula)
+		if self.expr:
+			expr = ' expression=%s' % self.expr.get_eqn_str()
+		return '%s label=%s formula=%s%s' % (self.name,self.label,self.formula,expr)
 
 	def calc_drawing_coordinates(self):
 		"""xcoor assigned as average xcoor of delay's start and end anchors
@@ -1911,11 +1947,13 @@ class PulseSequence:
 		self._draw(file)
 		print link 
 
-	def _compile_anchor_group(self,g,pre_dly):
-		"""split anchor group into new groups with exactly one anchor each
-		insert delays between anchor groups, update expression in the pre_dly
+	def _recalc_anchor_group_delays(self,g,pre_dly):
+		"""update expression in the pre_dly
 		return new delay expression to be substracted from timing 
 		delay of the following anchor group
+
+		g - group to compile
+		pre_dly - delay preceding to group g 
 		"""
 		g.time() #calculate pre_length and post_length of each anchor 
 		         #so that events fit exactly
@@ -1928,38 +1966,66 @@ class PulseSequence:
 		for a in g.anchor_list:
 			#pre- and post- anchor group delay calculation
 			if a == g.timed_anchor:
-				update_pre_dly = False
 				pre_e = E('sub',pre_e, a.pre_span)
-			if update_pre_dly:
-				pre_e = E('sub',pre_e, a.span)
+				update_pre_dly = False
+			if update_pre_dly: 
+				pre_e = E('sub',pre_e, a.span) #before timed substract entire length of events
 			if calc_post_dly:
 				post_e = E('add',post_e, a.span)
 			if a == g.timing_anchor:
 				post_e = E('add',post_e, a.post_span)
 				calc_post_dly = True
-
-			#create new anchor, copy events that can be copied
-			#create new events in place of old ones
-			if a != g.anchor_list[-1]:
-				#add post delay to all events but last
-				#e.g grad pulses get recovery delays
-				#not sure yet how to deal with pulse gating delays
-				pass
-
 		pre_dly.expr = pre_e
 		return post_e
 			
 
 
-	def _compile_add_delay(self):
+	def _compile_add_delay(self,expr):
 		"""creates delay with auto-generated name, appends it to the delay list
 		returns the newly created delay
 		"""
 		cid = self._compile_cdelay_id
-		dly = Delay('auto-delay-%d' % cid)
+		dly = Delay('auto_delay_%d' % cid)
+		dly.expr = expr
 		self.add_delay(dly)
 		self._compile_cdelay_id = cid + 1
 		return dly
+
+	def _compile_init(self,src):
+		"""initialize data before compilation of user-entered sequence
+
+		probably wide event handling here must be moved upstream
+		but this will require reworking the object model quite a bit
+		"""
+		import copy
+		src = copy.deepcopy(src)
+		self._compile_src = src
+		self._compile_cdelay_id = 0 #index for the next delay created by compiler
+
+		#bootstrap wide events to start and end_anchors
+		#this code probably must be moved upstream or handling of 
+		#wide events must be completely redone
+		for g in src._glist:
+			for a in g.anchor_list:
+				a.determine_type()
+				if a.type == 'pegging':
+					new_events = [] 
+					events = a.events
+					a.events = new_events
+					for e in events:
+						start_e = WideEventToggle('on',e)
+						end_e = WideEventToggle('off',e)
+						e.end_anchor.add_event(end_e)
+						a.add_event(start_e)
+
+					
+	def _compile_add_anchor_group(self,anchor):
+		ng = AnchorGroup()
+		self._glist.append(ng)
+		ng.anchor_list.append(anchor)
+		ng.timing_anchor = anchor
+		ng.timed_anchor = anchor
+		return ng
 
 	def compile(self,src):
 		"""Compile user-entered pulse sequence object src into a new one (self)
@@ -1974,31 +2040,52 @@ class PulseSequence:
 		src - source pulse sequence object
 		self - compiled pulse sequence object
 		"""
-		import copy
-		src = copy.deepcopy(src)
+		self._compile_init(src)
+		src = self._compile_src
 
-		#somehow bootstrap wide events to end_anchors
-		#so that things like decoff(); could be treated properly
-
-		self._compile_cdelay_id = 0
 		groups = iter(src.get_anchor_groups())
-		pg = groups.next()
-		zero_dly = Delay('zero')
-		zero_dly.length = 0
+		pg = groups.next() #dummy start anchor group
 
-		pre_dly_expr = E('set',zero_dly)
+		pre_dly_expr = E('set',N(0))
 
-		self._compile_cdly_id = 0
+		#first pass on input code - substract durations of elements from
+		#delays between anchor groups
 		for g in groups:
-			dly = self._compile_add_delay()
-			dly.expr = E('sub',pg.post_delay,pre_dly_expr)
-			pre_delay_expr = self._compile_anchor_group(g,dly) #adds delays and anchor groups
-			print g
-			print pre_delay_expr.get_eqn_str()
+			expr = E('sub',pg.post_delay,pre_dly_expr)
+			dly = self._compile_add_delay(expr)
+			pg.post_delay = dly
+			pre_dly_expr = self._recalc_anchor_group_delays(g,dly) 
 			pg = g
 
+		#second pass actually create new pulse sequence
+		#add separate anchor group for each event
+		#mark official delays for further use in third pass
+		#add dummy zero length delays between new anchor groups
+
+		groups = iter(src.get_anchor_groups())
+		pg = groups.next() #dummy group
+		self._glist[0].post_delay = pg.post_delay
+		for g in groups:
+			dly = pg.post_delay
+			dly.start_anchor = pg
+
+			last_anchor = g.anchor_list.pop()
+
+			for a in g.anchor_list:
+				ng = self._compile_add_anchor_group(a)
+				dly.end_anchor = a
+				dly = self._compile_add_delay(E('set',N(0)))
+				ng.post_delay = dly
+
+			ng = self._compile_add_anchor_group(last_anchor)
+			dly.end_anchor = last_anchor
+			ng.post_delay = g.post_delay
+
+			pg = ng
+
+		#third pass
 		#reassign channels where necessary 
-		#this will require inserting frequency switch anchors
+		#insert frequency switch anchors
 		#have to do this in the middle of official delays
 
 
@@ -2006,6 +2093,7 @@ class PulseSequence:
 		"""Creates varian pulse sequence file based on the pulse
 		sequence object
 		"""
+		print self
 		print "not implemented"
 	
 	def __str__(self):
