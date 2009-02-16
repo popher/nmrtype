@@ -234,15 +234,20 @@ class N:
 class E:
 	"""delay expression class
 	holds tree representation of formula for calulating delays
+	operands are either expressions or PulseSequenceElement objects
+	or number objects 
+	
+	units are seconds
 
 	e = E('set',delay1) #one operand!
 	e = E('add',delay1,pulse2,pulse3) #multiple operands
 	e = E('sub',delay1,delay2) #note two operands!
 	e = E('div',delay1,delay2) #note two operands!
 	e = E('max',delay1,delay2,...) #multiple operands
+	e = E('mul',...) #multiple operands
 	"""
 	def __init__(self,type,*arg):
-		ok_types = ('add','sub','max','set','div')
+		ok_types = ('add','sub','max','set','div','mul')
 		ok_operands = ('delay','rf_wide_pulse','rf_pulse','pfg'
 				,'expression','num','acq','wide_event_toggle')
 		if type not in ok_types:
@@ -256,7 +261,10 @@ class E:
 			if op.get_type() not in ok_operands:
 				raise 'internal error: illegal operand type %s' % op.get_type()
 		self._operator = type
-		self._operands = arg
+		self._operands = list(arg)
+
+	def get_operands(self):
+		return self._operands
 
 	def get_type(self):
 		return 'expression';
@@ -270,6 +278,8 @@ class E:
 			return 'max(' + ','.join(tokens) + ')'
 		elif op == 'add':
 			return '+'.join(tokens)
+		elif op == 'mul':
+			return '*'.join(tokens)
 		elif op == 'sub':
 			return tokens[0] + '-(' + tokens[1] + ')'
 		elif op == 'set':
@@ -328,14 +338,19 @@ class Anchor:
 		"""initialize two expression objects per anchor
 		that will be used to calculate equations for delays between events
 		one for pre-anchor dead time and one for post-anchor dead time
-
-		limitation only assumes that all event.anchor_align = 'center'
 		"""
+		pres = []
+		posts = []
+		for e in self.events:
+			e.time()
+			pres.append(e.pre_span)
+			posts.append(e.post_span)
+
 		length = E('max',*(self.events))
 		half = E('div',length,N(2))
-		self.pre_span = half 
-		self.post_span = half 
-		self.span = length
+		self.pre_span = E('max',*(pres)) 
+		self.post_span = E('max',*(posts))
+		self.span = E('add',self.pre_span,self.post_span) 
 
 	def has_event(self,channel):
 		for e in self.events:
@@ -429,7 +444,7 @@ class AnchorGroup:
 
 	def time(self):
 		for a in self.anchor_list:
-			a.time() #calculate anchor toffset
+			a.time() #calculate anchor pre_span and post_span
 
 	def get_anchor(self,a_name):
 		for a in self.anchor_list:
@@ -514,7 +529,7 @@ class PulseSequenceElement:
 	currently (Feb 14 2009) anchors that are referenced by end_anchor
 	do not themseleves point to wide events
 
-	however at compile stage for production of code WideEventOnOff elements are
+	however at compile stage for production of code WideEventToggle elements are
 	inserted to anchors at the beginning and the end of wide events
 	"""
 	def __init__(self):
@@ -525,10 +540,41 @@ class PulseSequenceElement:
 		self.expr = None
 		self.name = None
 		self.channel = None
+		self.edge = 'center' #issue: not needed for phase
+		self.pre_span = None  #these aren't needed for phase either - so maybe phase shouldn be PSE
+		self.post_span = None
 	def __str__(self):
 		return self._type
 
+	def time(self):
+		"""calculate pre_span and post_span expressions
+
+		Limitation: this method can be only called after compile initialization
+		it's because wide events are not represented by WideEventToggle events just after
+		the user input parsing this needs to be fixed in the future issue of PS object model
+
+		Prerequisites: definition of .pre_gating_delay, .post_gating_delay
+		btw: pulse element also has .pre_comp_delay and .post_comp_delay
+		time() method is different for Pulse() object, because there is optional compensation delay
+		"""
+		(pre,post) = (None,None)
+		if self.edge not in ('center','left','right'):
+			raise 'internal error: unknown value of edge %s in element %s' % (self.edge,self.name)
+		if self.edge == 'center':
+			pre = E('set',E('div',self,N(2)))
+			post = pre
+		elif self.edge == 'left':
+			pre = E('set',N(0))
+			post = E('set',self)
+		elif self.edge == 'right':
+			pre = E('set',self)
+			post = E('set',N(0))
+		self.pre_span = E('add',pre,self.pre_gating_delay)
+		self.post_span = E('add',post,self.post_gating_delay)
+
 	def get_eqn_str(self):
+		"""returns symbol to be used in the formula to calculate length of element
+		"""
 		return self.name
 
 	def load_template_data(self):#temporary ? plug
@@ -660,6 +706,82 @@ class Phase(PulseSequenceElement):
 	def __str__(self):
 		return self.name + ' ' + self.label + ' ' + self.table
 
+class Delay(PulseSequenceElement):
+	def __init__(self,name,expr=None):
+		PulseSequenceElement.__init__(self)
+		self._type = 'delay'
+		self.length = None    #length of delay in seconds
+		self.name = name
+		self.label = None
+		self.formula = None
+		self.show_at = None #channel at which to draw delay
+		self.start_anchor = None
+		self.end_anchor = None
+		self.expr = expr
+		self.label_yoffset = 0
+		self.template = PulseSequenceElementTemplate('delay',name)
+		#start_anchor
+		#end_anchor assinged in PulseSequence._attach_delays_to_anchors()
+
+	def __str__(self):
+		if self.expr:
+			expr = ' expression=%s' % self.expr.get_eqn_str()
+		return '%s label=%s formula=%s%s' % (self.name,self.label,self.formula,expr)
+
+	def get_eqn_str(self):
+		if self.expr == None:
+			return PulseSequenceElement.get_eqn_str(self)
+		else:
+			return self.expr.get_eqn_str()
+
+	def calc_drawing_coordinates(self):
+		"""xcoor assigned as average xcoor of delay's start and end anchors
+		"""
+		self.xcoor = int((self.start_anchor.xcoor + self.end_anchor.xcoor)/2)
+
+	def draw_bounding_tics(self):
+		"""a tic mark will be drawn on a side where anchor has no attached events
+		"""
+		start = self.start_anchor
+		end = self.end_anchor
+		if not start.has_event(self.show_at):
+			start.draw_tic(self.show_at)
+		if not end.has_event(self.show_at):
+			end.draw_tic(self.show_at)
+
+	def draw(self,draw_obj):
+		"""this routine is really drawing a delay label text, and does nothing if 
+		delay is "hidden"
+		"""
+
+		if self.is_hidden():
+			return
+
+		if self.label:
+			text = self.label
+		else:
+			text = self.name
+		self.ycoor = self.pulse_sequence.get_rf_channel_ycoor(self.show_at) \
+						- self.pulse_sequence.channel_drawing_height/2 \
+						- int(self.label_yoffset)
+
+		image_obj = self.pulse_sequence.get_image_object()
+		draw_latex(text,self.pulse_sequence,(self.xcoor,self.ycoor),yplacement='center-clear')
+
+		self.draw_bounding_tics()
+
+	def is_hidden(self):
+		if self.template.__dict__.has_key('hide'):
+			if self.template.hide == False:
+				return False
+			elif self.template.hide == True:
+				return True
+			else:
+				raise 'internal error. wrong value of Delay.template.hide'
+		else:
+			return False
+
+
 class WideEventToggle(PulseSequenceElement):
 	"""class for turning on/off wide event
 	not used for drawing output, only used for compilation into code
@@ -693,15 +815,30 @@ class Pulse(PulseSequenceElement):
 		self.channel = channel
 		self.phase = None
 		self.label = None
-		self.edge_align = 'center' #(left|right|center) - "edge" of pulse to be anchored
-		self.post_gating = 0 #two gating delays
-		self.pre_gating = 0 
+		self.comp = None #compensation delay for 90 degree pulses
+		self.edge = 'center' #(left|right|center) - "edge" of pulse to be anchored
 
 	def __str__(self):
 		out = self.type
 		if self.phase:
 			out = out + ' phase ' + self.phase.__str__()
 		return out
+
+	def time(self):
+		PulseSequenceElement.time(self)
+		if self.comp == None:
+			return
+		span = None
+		if self.comp == 'before':
+			span = self.pre_span
+		elif self.comp == 'after':
+			span = self.post_span
+		#perform surgery on extracted span
+		ops = span.get_operands()
+		# using ops[1] careful here index must be correct - see PulseSequenceElement.time() method
+		#todo: should I check that this is a 90 pulse?
+		comp = E('div',E('mul',self,N(2)),N('pi'))
+		ops[1] = E('max',ops[1],Delay('comp_delay',expr=comp))
 
 	def calc_drawing_dimensions(self,maxh):
 		#width_table = {'90':14,'180':22,'shp':42,'lp':14,'rect':14}
@@ -881,75 +1018,6 @@ class WideGradPulse(GradPulse):
 	def draw(self,psdraw):
 		if not self.alternated:
 			PulseSequenceElement.draw_pegged_pulse(self,psdraw)
-
-
-class Delay(PulseSequenceElement):
-	def __init__(self,name):
-		PulseSequenceElement.__init__(self)
-		self._type = 'delay'
-		self.length = None    #length of delay in seconds
-		self.name = name
-		self.label = None
-		self.formula = None
-		self.show_at = None #channel at which to draw delay
-		self.start_anchor = None
-		self.end_anchor = None
-		self.label_yoffset = 0
-		self.template = PulseSequenceElementTemplate('delay',name)
-		#start_anchor
-		#end_anchor assinged in PulseSequence._attach_delays_to_anchors()
-
-	def __str__(self):
-		if self.expr:
-			expr = ' expression=%s' % self.expr.get_eqn_str()
-		return '%s label=%s formula=%s%s' % (self.name,self.label,self.formula,expr)
-
-	def calc_drawing_coordinates(self):
-		"""xcoor assigned as average xcoor of delay's start and end anchors
-		"""
-		self.xcoor = int((self.start_anchor.xcoor + self.end_anchor.xcoor)/2)
-
-	def draw_bounding_tics(self):
-		"""a tic mark will be drawn on a side where anchor has no attached events
-		"""
-		start = self.start_anchor
-		end = self.end_anchor
-		if not start.has_event(self.show_at):
-			start.draw_tic(self.show_at)
-		if not end.has_event(self.show_at):
-			end.draw_tic(self.show_at)
-
-	def draw(self,draw_obj):
-		"""this routine is really drawing a delay label text, and does nothing if 
-		delay is "hidden"
-		"""
-
-		if self.is_hidden():
-			return
-
-		if self.label:
-			text = self.label
-		else:
-			text = self.name
-		self.ycoor = self.pulse_sequence.get_rf_channel_ycoor(self.show_at) \
-						- self.pulse_sequence.channel_drawing_height/2 \
-						- int(self.label_yoffset)
-
-		image_obj = self.pulse_sequence.get_image_object()
-		draw_latex(text,self.pulse_sequence,(self.xcoor,self.ycoor),yplacement='center-clear')
-
-		self.draw_bounding_tics()
-
-	def is_hidden(self):
-		if self.template.__dict__.has_key('hide'):
-			if self.template.hide == False:
-				return False
-			elif self.template.hide == True:
-				return True
-			else:
-				raise 'internal error. wrong value of Delay.template.hide'
-		else:
-			return False
 
 class PulseSequence:
 	"""Toplevel pulse sequence object
@@ -1425,7 +1493,7 @@ class PulseSequence:
 				return False
 			else:
 				raise ParsingError('cannot parse boolean value from %s' % val_input)
-		else:
+		elif isinstance(val_type,str):
 			list_re = re.compile(r'^(.*?)-list$')
 			m = list_re.match(val_type)
 			if (m):
@@ -1439,6 +1507,24 @@ class PulseSequence:
 					return typecasted_val_list[0]
 				else:
 					return typecasted_val_list
+			else:
+				raise 'internal error: unknown parameter type %s' % val_type
+		elif isinstance(val_type,dict):
+			specs = val_type #specs given in a table
+			val_type = specs['type'] #type of value for parameter
+			val_values = specs['values'] #allowed values
+			val_value = self._typecast_value(val_input,val_type)
+			tmp_val_list = None
+			if not isinstance(val_value,list):
+				tmp_val_list = [val_value]
+			else:
+				tmp_val_list = val_value
+			for v in tmp_val_list:
+				if v not in val_values:
+					raise ParsingError('value %s is not allowed; use one of %s' %
+						(v,','.join(val_values)))
+			return val_value
+
 
 	def _parse_variables(self,type,key_table,key_aliases={}):
 
@@ -1542,7 +1628,8 @@ class PulseSequence:
 						'arrow':'str',
 						'label':'str',
 						'length':'float',
-						'edge_align':'str',
+						'edge':{'type':'str','values':['center','left','right']},
+						'comp':{'type':'str','values':['before','after']} #compensation delay 2*pw/pi
 						})
 
 		self._parse_variables('acq',{'phase':'str',
@@ -1985,8 +2072,7 @@ class PulseSequence:
 		returns the newly created delay
 		"""
 		cid = self._compile_cdelay_id
-		dly = Delay('auto_delay_%d' % cid)
-		dly.expr = expr
+		dly = Delay('auto_delay_%d' % cid,expr=expr)
 		self.add_delay(dly)
 		self._compile_cdelay_id = cid + 1
 		return dly
@@ -2018,6 +2104,28 @@ class PulseSequence:
 						e.end_anchor.add_event(end_e)
 						a.add_event(start_e)
 
+
+		#initialize default .pre_gating_delay, .post_gating_delay for gradients,
+		#pulses, WideEventToggle's
+		pulse_gating = Delay('rf_pulse_gating_delay')
+		pfg_recovery = Delay('pfg_recovery_delay')
+		zero_delay = Delay('zero',expr=N(0))
+
+		(pre,post) = (None,None)
+		for g in src._glist:
+			for a in g.anchor_list:
+				for e in a.events:
+					if isinstance(e,Pulse):
+						pre = pulse_gating
+						post = pulse_gating
+					elif isinstance(e,GradPulse):
+						pre = zero_delay
+						post = pfg_recovery
+					elif isinstance(e,WideEventToggle):
+						pre = zero_delay
+						post = zero_delay
+					e.pre_gating_delay = pre
+					e.post_gating_delay = post
 					
 	def _compile_add_anchor_group(self,anchor):
 		ng = AnchorGroup()
