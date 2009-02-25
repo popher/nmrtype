@@ -14,8 +14,8 @@ delay T12: show_at=13C label=\frac{t_1}{2}
 delay rlx: hide=true
 delay d: label=\delta
 
-rfchan 13C: label=^{13}C
-rfchan H: label=^1H
+rfchan 13C: label=^{13}C  hardware=2
+rfchan H: label=^1H hardware=1
 pfgchan z: label=Grad.\ z
 
 pulse p1: phase=phi1 arrow=left 

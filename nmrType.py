@@ -338,6 +338,9 @@ class Anchor:
 		"""initialize two expression objects per anchor
 		that will be used to calculate equations for delays between events
 		one for pre-anchor dead time and one for post-anchor dead time
+
+		this function is merged with calc_drawing_dimensions, so probably should
+		be renamed???
 		"""
 		pres = []
 		posts = []
@@ -352,29 +355,42 @@ class Anchor:
 		self.post_span = E('max',*(posts))
 		self.span = E('add',self.pre_span,self.post_span) 
 
+		#calc drawing dimensions - moved in code from separate function
+		self.determine_type()
+
+		anchor_w = 0
+		anchor_pre_w = 0
+		anchor_post_w = 0
+		if self.type == 'normal':
+			for e in self.events:
+				e.calc_drawing_dimensions(maxh)
+				ew = e.drawing_width
+				pre_w = e.drawing_pre_width
+				post_w = e.drawing_post_width
+				if ew > anchor_w:
+					anchor_w = ew
+				if pre_w > anchor_pre_w:
+					anchor_pre_w = pre_w
+				if post_w > anchor_post_w:
+					anchor_post_w = post_w
+					
+		elif self.type in ('empty','pegging'):
+			anchor_w = 0
+			anchor_pre_w = 0
+			anchor_post_w = 0
+		else:
+			raise 'internal error: unknown anchor type \'%s\'' % self.type
+
+		self.drawing_width = anchor_w
+		self.drawing_pre_width = anchor_pre_w
+		self.drawing_post_width = anchor_post_w
+
+
 	def has_event(self,channel):
 		for e in self.events:
 			if e.channel == channel:
 				return True
 		return False
-
-	def calc_drawing_dimensions(self,maxh):
-
-		self.determine_type()
-
-		w = 0
-		if self.type == 'normal':
-			for e in self.events:
-				e.calc_drawing_dimensions(maxh)
-				ew = e.drawing_width
-				if ew > w:
-					w = ew
-		elif self.type in ('empty','pegging'):
-			w = 0
-		else:
-			raise 'internal error: unknown anchor type \'%s\'' % self.type
-
-		self.drawing_width = w
 
 	def _are_events_compatible(self,e1,e2):
 		compatible_groups = (('rf_wide_pulse','acq'),
@@ -535,6 +551,8 @@ class PulseSequenceElement:
 	def __init__(self):
 		self.anchor = None
 		self.drawing_width = 0
+		self.drawing_pre_width = 0  #pixels before anchor
+		self.drawing_post_width = 0 #pixels after anchor
 		self.drawing_height = 0
 		self.template = None #instance of PulseSequenceElementTemplate
 		self.expr = None
@@ -571,6 +589,25 @@ class PulseSequenceElement:
 			post = E('set',N(0))
 		self.pre_span = E('add',pre,self.pre_gating_delay)
 		self.post_span = E('add',post,self.post_gating_delay)
+
+	def calc_drawing_dimensions(self):
+		"""this function calculates .drawing_pre_width and .drawing_post_width
+		based on .edge alignment parameter 
+		this function is only meaningful if .drawing_width is set
+		"""
+		if self.edge == 'center':
+			half = int(self.drawing_width/2) #may be issues with pixel imperfect sizing 
+			self.drawing_pre_width = half
+			self.drawing_post_width = half
+			self.drawing_width = half*2
+		elif self.edge == 'left':
+			self.drawing_pre_width = 0
+			self.drawing_post_width = self.drawing_width
+		elif self.edge == 'right':
+			self.drawing_pre_width = self.drawing_width
+			self.drawing_post_width = 0
+		else:
+			raise 'internal error: unknown value of edge %s in element %s' % (self.edge,self.name)
 
 	def get_eqn_str(self):
 		"""returns symbol to be used in the formula to calculate length of element
@@ -800,6 +837,8 @@ class WideEventToggle(PulseSequenceElement):
 
 	def get_eqn_str(self):
 		return self.event.get_eqn_str()
+	def draw(self):
+		pass #dont get in the way yet
 
 class Pulse(PulseSequenceElement):
 	"""class for RF pulse
@@ -853,6 +892,7 @@ class Pulse(PulseSequenceElement):
 			self.drawing_height = 0.2*maxh
 		else:
 			self.drawing_height = maxh
+		PulseSequenceElement.calc_drawing_dimensions(self)
 
 	def draw(self,draw_obj):
 		if self.type in ('90','180','lp','rect'):
@@ -894,6 +934,7 @@ class WidePulse(Pulse):
 		return 'cpd_toggle'
 
 	def calc_drawing_dimensions(self,maxh):
+		#this needs to be redone, b/c width now goes by delay widths
 		self.drawing_width = self.end_anchor.xcoor - self.anchor.xcoor
 		if self.type in ('fid','echo'):
 			self.drawing_height = 0.7*maxh
@@ -935,6 +976,7 @@ class Acquisition(WidePulse):
 
 class GradPulse(PulseSequenceElement):
 	def __init__(self,name,channel):
+		PulseSequenceElement.__init__(self)
 		self._type = 'pfg'
 		self.type = 'shaped'#shaped or rectangular
 		self.alternated = False
@@ -949,6 +991,7 @@ class GradPulse(PulseSequenceElement):
 		return 'pfg %s %s %s %s' % (self.channel,self.name,self.length,self.strength)
 	def calc_drawing_dimensions(self,maxh):
 		self.drawing_width = 12  #was 32
+		PulseSequenceElement.calc_drawing_dimensions(self)
 		maxh = maxh*0.95 #gradient pulse must be shorter so that negative and positive fit
 		self._maxh = maxh #for later use
 
@@ -1653,7 +1696,7 @@ class PulseSequence:
 						'table':'int-list'})
 		self._attach_phases_to_pulses()
 
-		self._parse_variables('rfchan',{'label':'str'})
+		self._parse_variables('rfchan',{'label':'str','hardware':'int'})
 		self._parse_variables('pfgchan',{'label':'str'})
 
 		self._parse_decorations()#decorations are contained in DecorLineList object
@@ -1722,67 +1765,6 @@ class PulseSequence:
 				'pulses':pulses,'phases':phases,'delays':delays,'decorations':decorations,
 				'gradients':gradients,'cpd':cpd,'rfchan':rfchan,'pfgchan':pfgchan}
 
-	def _calc_drawing_coordinates(self):
-		"""Iterates through list of anchor groups, then in the
-		nested loop - through list of anchors and calculates drawing
-		dimensions for each anchor (i.e. dimensions of anchor elements).
-		calculate drawing coordinates of pegged events and delays
-
-		details:
-		validate presence of timed anchor per group, presence of drawing offset
-		xcoor assigned to timed anchor, calculate dimensions of all anchors
-		then assign xcoor to all other anchors based on xcoor of timed anchor
-		and width of anchors
-		"""
-		gl = self._glist
-		for g in gl:
-			ta = g.timed_anchor
-			if ta == None:
-				raise ParsingError('all anchor groups must be timed')
-			xcoor = g.xcoor
-			if xcoor == None:
-				raise ParsingError('all anchor groups must have defined drawing offset')
-
-			ta.xcoor = xcoor
-			al = g.anchor_list
-			maxh = self.channel_drawing_height
-
-			for a in al:
-				a.calc_drawing_dimensions(maxh)#calculate width taken up by elements attached to an anchor
-			#this won't touch pegged events, because their width depends on anchor coordinates
-
-			ta_index = g.anchor_list.index(ta)#index of timed anchor in anchor list
-
-			c_index = ta_index - 1
-			c_coor = ta.xcoor
-			prev_a = ta
-			while c_index >= 0:
-				a = al[c_index]
-				c_coor = c_coor - a.drawing_width/2 - prev_a.drawing_width/2
-				a.xcoor = c_coor
-				c_index = c_index - 1
-				prev_a = a
-
-			c_index = ta_index + 1
-			c_coor = ta.xcoor
-			prev_a = ta
-			while c_index < len(al):
-				a = al[c_index]
-				c_coor = c_coor + a.drawing_width/2 + prev_a.drawing_width/2
-				a.xcoor = c_coor
-				c_index = c_index + 1
-				prev_a = a
-
-		#now we can calculate widths of pegged events (those attached to two anchors)
-		for g in gl:
-			al = g.anchor_list
-			for a in al:
-				for e in a.events:
-					if e.is_pegged():
-						e.calc_drawing_dimensions(maxh)
-
-		for d in self._delay_list:
-			d.calc_drawing_coordinates()#no need to give height here
 
 	def _assign_delays_to_channels(self):
 		gl = self._glist
@@ -1815,7 +1797,7 @@ class PulseSequence:
 	def _prepare_for_drawing(self):
 		#self._assign_delays_to_channels()#decide at what channel draw delay symbols
 		#self._attach_delays_to_anchors()#each delay now gets start_anchor and end_anchor
-		self._calc_drawing_coordinates()#calc dimensions
+		#self._calc_drawing_coordinates()#this is merged into _compile_init() for now
 		self._compile_anchor_list()
 		self._prepare_channel_labels()
 
@@ -2036,15 +2018,12 @@ class PulseSequence:
 
 	def _recalc_anchor_group_delays(self,g,pre_dly):
 		"""update expression in the pre_dly
-		return new delay expression to be substracted from timing 
+		return new delay expression to be subtracted from timing 
 		delay of the following anchor group
 
 		g - group to compile
 		pre_dly - delay preceding to group g 
 		"""
-		g.time() #calculate pre_length and post_length of each anchor 
-		         #so that events fit exactly
-
 		pre_e = pre_dly.expr
 		post_e = E('set',N(0))
 
@@ -2126,6 +2105,59 @@ class PulseSequence:
 						post = zero_delay
 					e.pre_gating_delay = pre
 					e.post_gating_delay = post
+
+		#function time() also calculates drawing offsets relative to
+		#anchors so I decided to put all graphics coordinate
+		#calculations here for the ease of maintenance
+		#probably this entire _compile_init() function
+		#needs to go inside read()
+		for g in src._glist:
+			g.time() #and calc relative element drawing offsets
+
+			ta = g.timed_anchor
+			if ta == None:
+				raise ParsingError('all anchor groups must be timed')
+
+			#calculate relative coordinates in anchor group
+			al = g.anchor_list
+			ta_xcoor = 0
+			ta_index = g.anchor_list.index(ta)#index of timed anchor in anchor list
+			c_index = ta_index - 1
+			c_coor = ta.xcoor
+			prev_a = ta
+			while c_index >= 0:
+				a = al[c_index]
+				c_coor = c_coor - a.drawing_width/2 - prev_a.drawing_width/2
+				a.xcoor = c_coor
+				c_index = c_index - 1
+				prev_a = a
+
+			c_index = ta_index + 1
+			c_coor = ta.xcoor
+			prev_a = ta
+			while c_index < len(al):
+				a = al[c_index]
+				c_coor = c_coor + a.drawing_width/2 + prev_a.drawing_width/2
+				a.xcoor = c_coor
+				c_index = c_index + 1
+				prev_a = a
+
+		#calculate delay drawing widths
+		for d in self._delay_list:
+			d.calc_drawing_coordinates()#no need to give height here
+
+		#now we can calculate widths of pegged events (those attached to two anchors)
+		for g in gl:
+			al = g.anchor_list
+			for a in al:
+				for e in a.events:
+					if e.is_pegged():
+						e.calc_drawing_dimensions(maxh)
+
+
+		#calculate actual anchor coordinates
+		#calculate actual event coordinates
+		#calculate wide event drawing coordinates
 					
 	def _compile_add_anchor_group(self,anchor):
 		ng = AnchorGroup()
@@ -2162,7 +2194,7 @@ class PulseSequence:
 			expr = E('sub',pg.post_delay,pre_dly_expr)
 			dly = self._compile_add_delay(expr)
 			pg.post_delay = dly
-			pre_dly_expr = self._recalc_anchor_group_delays(g,dly) 
+			pre_dly_expr = self._recalc_anchor_group_delays(g,dly) #this calls time()
 			pg = g
 
 		#second pass actually create new pulse sequence
@@ -2213,11 +2245,18 @@ class PulseSequence:
 seq = PulseSequence()
 try:
 	seq.read()
-	#seq.draw()
 	compiled = PulseSequence();
 	compiled.compile(seq);
+	#mess: draw is called after compile because
+	#compile calls time() routine that also
+	#now calculates drawing offsets
+	#because of very similar math used - decided to keep these together
+	#this will have to be cleaned out in the next version
+	#probably time() routine needs to be moved up into read()
+	#together with whatever it needs from _compile_init()
+	seq.draw()
 	#compiled.check_safety();
-	compiled.print_varian()
+	#compiled.print_varian()
 	sys.exit(0)
 except ParsingError,value:
 	print value
