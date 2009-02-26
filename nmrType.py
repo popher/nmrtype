@@ -462,6 +462,34 @@ class AnchorGroup:
 		for a in self.anchor_list:
 			a.time() #calculate anchor pre_span and post_span
 
+		ta = g.timed_anchor
+		if ta == None:
+			raise ParsingError('all anchor groups must be timed')
+
+		#calculate anchor coordinates in the anchor group relative to timed anchor
+		al = g.anchor_list
+		ta_xcoor = 0
+		ta_index = g.anchor_list.index(ta)#index of timed anchor in anchor list
+		c_index = ta_index - 1
+		c_coor = ta.xcoor
+		prev_a = ta
+		while c_index >= 0:
+			a = al[c_index]
+			c_coor = c_coor - a.drawing_post_width - prev_a.drawing_pre_width
+			a.xcoor = c_coor
+			c_index = c_index - 1
+			prev_a = a
+
+		c_index = ta_index + 1
+		c_coor = ta.xcoor
+		prev_a = ta
+		while c_index < len(al):
+			a = al[c_index]
+			c_coor = c_coor + a.drawing_pre_width + prev_a.drawing_post_width
+			a.xcoor = c_coor
+			c_index = c_index + 1
+			prev_a = a
+
 	def get_anchor(self,a_name):
 		for a in self.anchor_list:
 			if a.name == a_name:
@@ -756,6 +784,7 @@ class Delay(PulseSequenceElement):
 		self.end_anchor = None
 		self.expr = expr
 		self.label_yoffset = 0
+		self.image = None #image object
 		self.template = PulseSequenceElementTemplate('delay',name)
 		#start_anchor
 		#end_anchor assinged in PulseSequence._attach_delays_to_anchors()
@@ -775,6 +804,21 @@ class Delay(PulseSequenceElement):
 		"""xcoor assigned as average xcoor of delay's start and end anchors
 		"""
 		self.xcoor = int((self.start_anchor.xcoor + self.end_anchor.xcoor)/2)
+
+	def calc_drawing_width(self):
+		"""if delay is hidden, then default width is returned
+		otherwise an image is generated from label
+		then the resulting value taken directly from the image width
+		"""
+		if self.is_hidden():
+			self.drawing_width = 10 #todo setting take out
+			return
+		if self.label:
+			text = self.label
+		else:
+			text = self.name
+		self.image = latex2image(text)
+		self.drawing_width = self.image.size[0]
 
 	def draw_bounding_tics(self):
 		"""a tic mark will be drawn on a side where anchor has no attached events
@@ -803,7 +847,8 @@ class Delay(PulseSequenceElement):
 						- int(self.label_yoffset)
 
 		image_obj = self.pulse_sequence.get_image_object()
-		draw_latex(text,self.pulse_sequence,(self.xcoor,self.ycoor),yplacement='center-clear')
+		#delay label xplacement is 'center'
+		paste_image(self.image,self.pulse_sequence,(self.xcoor,self.ycoor),'center-clear','center')
 
 		self.draw_bounding_tics()
 
@@ -1087,6 +1132,47 @@ class PulseSequence:
 		head_group.anchor_list.append(a)
 		head_group.xcoor = 0
 		self._glist = [head_group]
+
+	def time(self):
+		for g in self._glist:
+			g.time() #and calc relative element drawing offsets
+		#calculate delay drawing widths
+		for d in self._delay_list:
+			d.calc_drawing_width()#no need to give height here
+
+		#here I need to go through anchor groups
+		#while prepending post delays to correct channel on following anchor group
+		#and calculate xcoors so that fit is the tightest - leftward
+
+		#first thing - calculate xoffsets of each event in the anchor group
+		#relative to timed anchor this will allow finding relative drawing position
+		#of the left edge of all channel events on that anchor group
+		#including the left edge of pre_delay
+
+		#init xcoor to 0
+		#set current anchor group to Head 
+		#foreach anchor group
+
+		#"prepend" post_delay to display channel on following anchor group
+		#when this is done - take into account left alignment of the delay label
+		#if there is no pulse then delay label can sink a little more to the left
+		#
+		#find channel that's sticking out backward
+		#align it with xcoor and calculate xcoor of all anchors in the group
+		#find what's sticking out forward
+		#set value of xcoor to the rightmost edge of sticking out event
+
+
+		#calculate actual anchor coordinates
+		#calculate actual event coordinates
+		#calculate wide event drawing coordinates
+		#now we can calculate widths of pegged events (those attached to two anchors)
+		for g in gl:
+			al = g.anchor_list
+			for a in al:
+				for e in a.events:
+					if e.is_pegged():
+						e.calc_drawing_dimensions(maxh)
 
 	def add_delay(self,dly):
 		self._delay_list.append(dly)
@@ -2044,54 +2130,16 @@ class PulseSequence:
 		pre_dly.expr = pre_e
 		return post_e
 			
-
-
-	def _compile_add_delay(self,expr):
-		"""creates delay with auto-generated name, appends it to the delay list
-		returns the newly created delay
+	def _compile_add_gating_delays(self):
+		"""adds rf_pulse_gating_delay and pfg_recovery_delay
+		to corresponding elements
 		"""
-		cid = self._compile_cdelay_id
-		dly = Delay('auto_delay_%d' % cid,expr=expr)
-		self.add_delay(dly)
-		self._compile_cdelay_id = cid + 1
-		return dly
-
-	def _compile_init(self,src):
-		"""initialize data before compilation of user-entered sequence
-
-		probably wide event handling here must be moved upstream
-		but this will require reworking the object model quite a bit
-		"""
-		import copy
-		src = copy.deepcopy(src)
-		self._compile_src = src
-		self._compile_cdelay_id = 0 #index for the next delay created by compiler
-
-		#bootstrap wide events to start and end_anchors
-		#this code probably must be moved upstream or handling of 
-		#wide events must be completely redone
-		for g in src._glist:
-			for a in g.anchor_list:
-				a.determine_type()
-				if a.type == 'pegging':
-					new_events = [] 
-					events = a.events
-					a.events = new_events
-					for e in events:
-						start_e = WideEventToggle('on',e)
-						end_e = WideEventToggle('off',e)
-						e.end_anchor.add_event(end_e)
-						a.add_event(start_e)
-
-
-		#initialize default .pre_gating_delay, .post_gating_delay for gradients,
-		#pulses, WideEventToggle's
 		pulse_gating = Delay('rf_pulse_gating_delay')
 		pfg_recovery = Delay('pfg_recovery_delay')
 		zero_delay = Delay('zero',expr=N(0))
 
 		(pre,post) = (None,None)
-		for g in src._glist:
+		for g in self._glist:
 			for a in g.anchor_list:
 				for e in a.events:
 					if isinstance(e,Pulse):
@@ -2106,58 +2154,70 @@ class PulseSequence:
 					e.pre_gating_delay = pre
 					e.post_gating_delay = post
 
+
+	def _compile_add_delay(self,expr):
+		"""creates delay with auto-generated name, appends it to the delay list
+		returns the newly created delay
+		_compile_add_wide_event_toggles() must be called before this
+		"""
+		cid = self._compile_cdelay_id
+		dly = Delay('auto_delay_%d' % cid,expr=expr)
+		self.add_delay(dly)
+		self._compile_cdelay_id = cid + 1
+		return dly
+
+	def _compile_add_wide_event_toggles(self):
+		for g in self._glist:
+			for a in g.anchor_list:
+				a.determine_type()
+				if a.type == 'pegging':
+					new_events = [] 
+					events = a.events
+					a.events = new_events
+					for e in events:
+						start_e = WideEventToggle('on',e)
+						end_e = WideEventToggle('off',e)
+						e.end_anchor.add_event(end_e)
+						a.add_event(start_e)
+
+	def _compile_init(self,src):
+		"""initialize data before compilation of user-entered sequence
+
+		makes a copy of the source pulse sequence, then 
+		adds wide event toggles (plug - needs to be done at input pending changes in model)
+		adds gating delays
+		calculates event timings: pre-anchor and post-anchor spans
+		creates draft label images to determine their size
+		calculates drawing offsets for all elements
+		"""
+		import copy
+		src = copy.deepcopy(src)  #bug: copying done before images are calc'd
+					#because of this and the fact that compile
+					#calculates all drawing offsets as well
+					#which is because timing and drawing offset
+					#calculations are very similar so they 
+					#are clumped together in time() functions
+					#--- it's impossible to call draw()
+					#before compile()
+		self._compile_src = src
+		self._compile_cdelay_id = 0 #index for the next delay created by compiler
+
+		#bootstrap wide events to start and end_anchors
+		#this code probably must be moved upstream or handling of 
+		#wide events must be completely redone
+		src._compile_add_wide_event_toggles()
+
+
+		#initialize default .pre_gating_delay, .post_gating_delay for gradients,
+		#pulses, WideEventToggle's
+		src._compile_add_gating_delays()
+
 		#function time() also calculates drawing offsets relative to
 		#anchors so I decided to put all graphics coordinate
 		#calculations here for the ease of maintenance
 		#probably this entire _compile_init() function
 		#needs to go inside read()
-		for g in src._glist:
-			g.time() #and calc relative element drawing offsets
-
-			ta = g.timed_anchor
-			if ta == None:
-				raise ParsingError('all anchor groups must be timed')
-
-			#calculate relative coordinates in anchor group
-			al = g.anchor_list
-			ta_xcoor = 0
-			ta_index = g.anchor_list.index(ta)#index of timed anchor in anchor list
-			c_index = ta_index - 1
-			c_coor = ta.xcoor
-			prev_a = ta
-			while c_index >= 0:
-				a = al[c_index]
-				c_coor = c_coor - a.drawing_width/2 - prev_a.drawing_width/2
-				a.xcoor = c_coor
-				c_index = c_index - 1
-				prev_a = a
-
-			c_index = ta_index + 1
-			c_coor = ta.xcoor
-			prev_a = ta
-			while c_index < len(al):
-				a = al[c_index]
-				c_coor = c_coor + a.drawing_width/2 + prev_a.drawing_width/2
-				a.xcoor = c_coor
-				c_index = c_index + 1
-				prev_a = a
-
-		#calculate delay drawing widths
-		for d in self._delay_list:
-			d.calc_drawing_coordinates()#no need to give height here
-
-		#now we can calculate widths of pegged events (those attached to two anchors)
-		for g in gl:
-			al = g.anchor_list
-			for a in al:
-				for e in a.events:
-					if e.is_pegged():
-						e.calc_drawing_dimensions(maxh)
-
-
-		#calculate actual anchor coordinates
-		#calculate actual event coordinates
-		#calculate wide event drawing coordinates
+		src.time() #time calculates timings, drawing offsets, generates draft label images
 					
 	def _compile_add_anchor_group(self,anchor):
 		ng = AnchorGroup()
