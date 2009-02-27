@@ -385,6 +385,8 @@ class Anchor:
 		self.drawing_pre_width = anchor_pre_w
 		self.drawing_post_width = anchor_post_w
 
+	def set_xcoor(self,xcoor):
+		self.xcoor = xcoor
 
 	def has_event(self,channel):
 		for e in self.events:
@@ -457,36 +459,73 @@ class AnchorGroup:
 		self.timing_anchor = None #anchor after which post_delay is to be applied
 		self.post_delay = None
 		self.xcoor = None
+		self.drawing_pre_width = 0
+		self.drawing_post_width = 0
 
 	def time(self):
 		for a in self.anchor_list:
 			a.time() #calculate anchor pre_span and post_span
 
-		ta = g.timed_anchor
+		ta = self.timed_anchor
 		if ta == None:
 			raise ParsingError('all anchor groups must be timed')
 
 		#calculate anchor coordinates in the anchor group relative to timed anchor
-		al = g.anchor_list
-		ta_xcoor = 0
-		ta_index = g.anchor_list.index(ta)#index of timed anchor in anchor list
-		c_index = ta_index - 1
-		c_coor = ta.xcoor
+		self.set_xcoor(0)
+		self.calc_drawing_width()
+
+	def calc_drawing_width(self):
+		al = self.anchor_list
+		last = len(al) - 1
+		self.drawing_pre_width = al[0].drawing_pre_width - al[0].xcoor 
+		self.drawing_post_width = al[last].xcoor + al[last].drawing_post_width
+		self.drawing_width = self.drawing_pre_width + self.drawing_post_width
+
+	def get_drawing_pre_width(self,channel = None):
+		ps = self.pulse_sequence
+		if channel == None:
+			channel = ps._rf_channel_order[0]
+		xcoor = self.drawing_post_width + self.xcoor
+		for e in self.get_events(channel=channel):
+			if e.anchor.xcoor < xcoor:
+				xcoor = e.anchor.xcoor - e.drawing_pre_width
+		return self.xcoor - xcoor
+
+	def get_drawing_post_width(self,channel = None):
+		ps = self.pulse_sequence
+		if channel == None:
+			channel = ps._rf_channel_order[0]
+		xcoor = self.xcoor - self.drawing_pre_width
+		for e in self.get_events(channel=channel):
+			if e.anchor.xcoor > xcoor:
+				xcoor = e.anchor.xcoor + e.drawing_post_width
+		return xcoor - self.xcoor
+
+	def get_events(self,channel=None):
+		events = []
+		# 9/9/26 document two above functions
+		#
+		pass
+		
+
+	def set_xcoor(self,xcoor):
+		ta = self.timed_anchor
+		al = self.anchor_list
+
+		ta_index = al.index(ta) 
+		ta.set_xcoor(xcoor)
 		prev_a = ta
-		while c_index >= 0:
+		c_index = ta_index - 1
+		while c_index > 0:
 			a = al[c_index]
-			c_coor = c_coor - a.drawing_post_width - prev_a.drawing_pre_width
-			a.xcoor = c_coor
+			a.set_xcoor(prev_a.xcoor - prev_a.drawing_pre_width - a.drawing_post_width)
 			c_index = c_index - 1
 			prev_a = a
-
-		c_index = ta_index + 1
-		c_coor = ta.xcoor
 		prev_a = ta
-		while c_index < len(al):
+		c_index = ta_index + 1
+		whicle c_index < len(al):
 			a = al[c_index]
-			c_coor = c_coor + a.drawing_pre_width + prev_a.drawing_post_width
-			a.xcoor = c_coor
+			a.set_xcoor(prev_a.xcoor + prev_a.drawing_post_width + a.drawing_pre_width)
 			c_index = c_index + 1
 			prev_a = a
 
@@ -804,6 +843,11 @@ class Delay(PulseSequenceElement):
 		"""xcoor assigned as average xcoor of delay's start and end anchors
 		"""
 		self.xcoor = int((self.start_anchor.xcoor + self.end_anchor.xcoor)/2)
+
+	def set_xcoor(self,xcoor):
+		"""set x coordinate of delay
+		"""
+		self.xcoor = xcoor
 
 	def calc_drawing_width(self):
 		"""if delay is hidden, then default width is returned
@@ -1140,33 +1184,34 @@ class PulseSequence:
 		for d in self._delay_list:
 			d.calc_drawing_width()#no need to give height here
 
-		#here I need to go through anchor groups
-		#while prepending post delays to correct channel on following anchor group
-		#and calculate xcoors so that fit is the tightest - leftward
+		glist = iter(g._glist)
+		cg = glist.next()
+		xcoor = 0
+		while g = glist.next():
+			cg.set_xcoor(xcoor) #set xcoor of all elements within group solid
+			cdelay = cg.post_delay
 
-		#first thing - calculate xoffsets of each event in the anchor group
-		#relative to timed anchor this will allow finding relative drawing position
-		#of the left edge of all channel events on that anchor group
-		#including the left edge of pre_delay
+			#drawing_pre_width and post_width at channel where delay is to be drawn
+			g_d_pre_w = g.get_drawing_pre_width(cdelay.show_at)
+			cg_d_post_w = cg.get_drawing_post_width(cdelay.show_at)
+			cg_d_end_xcoor = cg_xcoor + cg_d_post_w
 
-		#init xcoor to 0
-		#set current anchor group to Head 
-		#foreach anchor group
+			d_w = cdelay.drawing_width
 
-		#"prepend" post_delay to display channel on following anchor group
-		#when this is done - take into account left alignment of the delay label
-		#if there is no pulse then delay label can sink a little more to the left
-		#
-		#find channel that's sticking out backward
-		#align it with xcoor and calculate xcoor of all anchors in the group
-		#find what's sticking out forward
-		#set value of xcoor to the rightmost edge of sticking out event
+			cg_xcoor = cg.xcoor
+			g_xcoor = cg_xcoor + cg.drawing_post_width + g.drawing_pre_width
 
+			#calc xcoor for g so that delay label fits on channel "show_at"
+			#and anchor groups don't overlap
+			if cg_d_end_xcoor > g_xcoor - g_d_pre_w - d_w:
+				xcoor = cg_d_end_xcoor + g_d_pre_w + d_w
+			else:
+				xcoor = g_xcoor
 
-		#calculate actual anchor coordinates
-		#calculate actual event coordinates
-		#calculate wide event drawing coordinates
-		#now we can calculate widths of pegged events (those attached to two anchors)
+			cdelay.set_xcoor((cg_d_end_xcoor + xcoor - g_d_pre_w)/2)
+			cg = g
+
+		#now we can calculate widths of wide events (those attached to two anchors)
 		for g in gl:
 			al = g.anchor_list
 			for a in al:
@@ -2013,18 +2058,20 @@ class PulseSequence:
 			y = ch.ycoor
 			d.line(((x0,y),(w,y)),fill=fg)
 
+		#xcoor calculation now moved to _compile_init stage
+		#later perhaps all coordiante calcs to be moved into read (Fef 26 2009)
 		for a in anchors:
-			x = a.xcoor
+			#x = a.xcoor
 			if a.type == 'normal':
 				for e in a.events:
 					ch = e.channel	
-					e.xcoor = x
+					#e.xcoor = x
 					e.ycoor = self._calc_event_ycoor(e)
 					e.draw(d)
 			elif a.type == 'pegging':
 				for e in a.events:
 					ch = e.channel
-					e.xcoor = x + e.drawing_width/2 + 1 #+1 may be a bad hack
+					#e.xcoor = x + e.drawing_width/2 + 1 #+1 may be a bad hack
 					e.ycoor = self._calc_event_ycoor(e)
 					e.draw(d)
 					
