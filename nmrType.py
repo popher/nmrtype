@@ -363,7 +363,7 @@ class Anchor:
 		anchor_post_w = 0
 		if self.type == 'normal':
 			for e in self.events:
-				e.calc_drawing_dimensions(maxh)
+				e.calc_drawing_dimensions()
 				ew = e.drawing_width
 				pre_w = e.drawing_pre_width
 				post_w = e.drawing_post_width
@@ -393,6 +393,14 @@ class Anchor:
 			if e.channel == channel:
 				return True
 		return False
+
+	def get_events(self,channel=None):
+		channel = self.pulse_sequence.get_channel_key(channel)
+		output = []
+		for e in self.events:
+			if e.channel == channel:
+				output.append(e)
+		return output
 
 	def _are_events_compatible(self,e1,e2):
 		compatible_groups = (('rf_wide_pulse','acq'),
@@ -482,9 +490,12 @@ class AnchorGroup:
 		self.drawing_width = self.drawing_pre_width + self.drawing_post_width
 
 	def get_drawing_pre_width(self,channel = None):
+		"""get drawing_pre_width on a given channel for the anchor group
+		if channel==None, use first channel (first line with rf header)
+		"""
 		ps = self.pulse_sequence
-		if channel == None:
-			channel = ps._rf_channel_order[0]
+		channel = ps.get_channel_key(channel)
+
 		xcoor = self.drawing_post_width + self.xcoor
 		for e in self.get_events(channel=channel):
 			if e.anchor.xcoor < xcoor:
@@ -492,9 +503,12 @@ class AnchorGroup:
 		return self.xcoor - xcoor
 
 	def get_drawing_post_width(self,channel = None):
+		"""get drawing_post_width on a given channel for the anchor group
+		if channel==None, use first channel (first line with rf header)
+		"""
 		ps = self.pulse_sequence
-		if channel == None:
-			channel = ps._rf_channel_order[0]
+		channel = ps.get_channel_key(channel)
+
 		xcoor = self.xcoor - self.drawing_pre_width
 		for e in self.get_events(channel=channel):
 			if e.anchor.xcoor > xcoor:
@@ -503,10 +517,12 @@ class AnchorGroup:
 
 	def get_events(self,channel=None):
 		events = []
-		# 9/9/26 document two above functions
-		#
-		pass
-		
+		ps = self.pulse_sequence
+		channel = ps.get_channel_key(channel)
+		for a in self.anchor_list:
+			a_events = a.get_events(channel)
+			events.extend(a_events)
+		return events
 
 	def set_xcoor(self,xcoor):
 		ta = self.timed_anchor
@@ -516,14 +532,14 @@ class AnchorGroup:
 		ta.set_xcoor(xcoor)
 		prev_a = ta
 		c_index = ta_index - 1
-		while c_index > 0:
+		while c_index >= 0:
 			a = al[c_index]
 			a.set_xcoor(prev_a.xcoor - prev_a.drawing_pre_width - a.drawing_post_width)
 			c_index = c_index - 1
 			prev_a = a
 		prev_a = ta
 		c_index = ta_index + 1
-		whicle c_index < len(al):
+		while c_index < len(al):
 			a = al[c_index]
 			a.set_xcoor(prev_a.xcoor + prev_a.drawing_post_width + a.drawing_pre_width)
 			c_index = c_index + 1
@@ -630,6 +646,11 @@ class PulseSequenceElement:
 		self.post_span = None
 	def __str__(self):
 		return self._type
+
+	def get_maxh(self):
+		"""get channel drawing height
+		"""
+		return self.pulse_sequence.channel_drawing_height
 
 	def time(self):
 		"""calculate pre_span and post_span expressions
@@ -831,6 +852,8 @@ class Delay(PulseSequenceElement):
 	def __str__(self):
 		if self.expr:
 			expr = ' expression=%s' % self.expr.get_eqn_str()
+		else:
+			expr = self.name
 		return '%s label=%s formula=%s%s' % (self.name,self.label,self.formula,expr)
 
 	def get_eqn_str(self):
@@ -838,11 +861,6 @@ class Delay(PulseSequenceElement):
 			return PulseSequenceElement.get_eqn_str(self)
 		else:
 			return self.expr.get_eqn_str()
-
-	def calc_drawing_coordinates(self):
-		"""xcoor assigned as average xcoor of delay's start and end anchors
-		"""
-		self.xcoor = int((self.start_anchor.xcoor + self.end_anchor.xcoor)/2)
 
 	def set_xcoor(self,xcoor):
 		"""set x coordinate of delay
@@ -855,7 +873,7 @@ class Delay(PulseSequenceElement):
 		then the resulting value taken directly from the image width
 		"""
 		if self.is_hidden():
-			self.drawing_width = 10 #todo setting take out
+			self.drawing_width = 10 #todo magic number
 			return
 		if self.label:
 			text = self.label
@@ -968,9 +986,10 @@ class Pulse(PulseSequenceElement):
 		comp = E('div',E('mul',self,N(2)),N('pi'))
 		ops[1] = E('max',ops[1],Delay('comp_delay',expr=comp))
 
-	def calc_drawing_dimensions(self,maxh):
+	def calc_drawing_dimensions(self):
 		#width_table = {'90':14,'180':22,'shp':42,'lp':14,'rect':14}
 		width_table = {'90':9,'180':13,'shp':28,'lp':10,'rect':10}
+		maxh = self.get_maxh()
 		keys = width_table.keys()
 		if self.type in keys:
 			self.drawing_width = width_table[self.type]
@@ -1022,11 +1041,12 @@ class WidePulse(Pulse):
 	def get_eqn_str(self):
 		return 'cpd_toggle'
 
-	def calc_drawing_dimensions(self,maxh):
+	def calc_drawing_dimensions(self):
 		#this needs to be redone, b/c width now goes by delay widths
 		self.drawing_width = self.end_anchor.xcoor - self.anchor.xcoor
+		maxh = self.get_maxh()
 		if self.type in ('fid','echo'):
-			self.drawing_height = 0.7*maxh
+			self.drawing_height = 0.7*maxh #magic number
 		elif self.type in ('cpd','wp'):
 			self.drawing_height = maxh
 			if self.h1 != None:
@@ -1078,9 +1098,11 @@ class GradPulse(PulseSequenceElement):
 		self._maxh = 0
 	def __str__(self):
 		return 'pfg %s %s %s %s' % (self.channel,self.name,self.length,self.strength)
-	def calc_drawing_dimensions(self,maxh):
-		self.drawing_width = 12  #was 32
+	def calc_drawing_dimensions(self):
+		self.drawing_width = 12  #was 32 magic number
 		PulseSequenceElement.calc_drawing_dimensions(self)
+		maxh = self.get_maxh()
+		#magic number below
 		maxh = maxh*0.95 #gradient pulse must be shorter so that negative and positive fit
 		self._maxh = maxh #for later use
 
@@ -1109,6 +1131,7 @@ class GradPulse(PulseSequenceElement):
 			if not self.alternated:
 				PulseSequenceElement.draw_up_arc_pulse(self,psdraw)
 			else:
+				#strange hackery about drawing_height of pfg pulses
 				dh = self.drawing_height
 				self.drawing_height = self.strength[0]*self._maxh/100
 				PulseSequenceElement.draw_up_arc_pulse(self,psdraw)
@@ -1142,9 +1165,10 @@ class WideGradPulse(GradPulse):
 		self.h1 = None
 		self.h2 = None
 		self.drawing_width = 0
-	def calc_drawing_dimensions(self,maxh):
+	def calc_drawing_dimensions(self):
 		self.h1 = self.strength 
 		self.h2 = self.strength 
+		maxh = self.get_maxh()
 		self.drawing_height = maxh
 		
 	def draw(self,psdraw):
@@ -1157,6 +1181,8 @@ class PulseSequence:
 	def __init__(self):
 		"""among other things initializes head anchor group
 		but does not create first delay
+
+		most global drawing parameters entered here
 		"""
 		self._object_type_list = ('pfg','pfg_wide','rf_pulse','rf_wide_pulse',
 								'acq','phase')
@@ -1177,29 +1203,39 @@ class PulseSequence:
 		head_group.xcoor = 0
 		self._glist = [head_group]
 
+		#some constant drawing parameters
+		self.channel_drawing_height = 35 
+		self.margin_above = 40
+		self.margin_below = 20
+		self.margin_right = 20
+		self.margin_left = 20
+		self._bottom_drawing_limit =self.margin_above
+		self.image_mode = 'L'
+		self.fg_color = 0
+		self.bg_color = 256
+
 	def time(self):
 		for g in self._glist:
 			g.time() #and calc relative element drawing offsets
-		#calculate delay drawing widths
+		#calculate minimal necessary delay drawing widths
 		for d in self._delay_list:
 			d.calc_drawing_width()#no need to give height here
 
-		glist = iter(g._glist)
+		glist = iter(self._glist)
 		cg = glist.next()
 		xcoor = 0
-		while g = glist.next():
+		for g in glist:
 			cg.set_xcoor(xcoor) #set xcoor of all elements within group solid
 			cdelay = cg.post_delay
 
 			#drawing_pre_width and post_width at channel where delay is to be drawn
 			g_d_pre_w = g.get_drawing_pre_width(cdelay.show_at)
 			cg_d_post_w = cg.get_drawing_post_width(cdelay.show_at)
-			cg_d_end_xcoor = cg_xcoor + cg_d_post_w
+			cg_d_end_xcoor = cg.xcoor + cg_d_post_w
 
 			d_w = cdelay.drawing_width
 
-			cg_xcoor = cg.xcoor
-			g_xcoor = cg_xcoor + cg.drawing_post_width + g.drawing_pre_width
+			g_xcoor = cg.xcoor + cg.drawing_post_width + g.drawing_pre_width
 
 			#calc xcoor for g so that delay label fits on channel "show_at"
 			#and anchor groups don't overlap
@@ -1212,15 +1248,37 @@ class PulseSequence:
 			cg = g
 
 		#now we can calculate widths of wide events (those attached to two anchors)
-		for g in gl:
+		for g in self._glist:
 			al = g.anchor_list
 			for a in al:
 				for e in a.events:
 					if e.is_pegged():
-						e.calc_drawing_dimensions(maxh)
+						e.calc_drawing_dimensions()
 
 	def add_delay(self,dly):
 		self._delay_list.append(dly)
+
+	def get_channel_key(self,channel=None):
+		"""performs check of channel key returns what's on input
+		or first rf channel if channel == Null
+		"""
+		rf_ct = self._rf_channel_table
+		pfg_ct = self._pfg_channel_table
+
+		if channel==None:
+			return self._rf_channel_order[0]
+
+		
+		rf = rf_ct.has_key(channel)
+		pfg = pfg_ct.has_key(channel)
+		if rf and pfg:
+			#this error check should probably go to parsing stage
+			#and there better be one single channel table
+			raise ParsingError('rf and pfg channels use the same name %s' % channel)
+		elif rf or pfg:
+			return channel
+		else:
+			raise 'internal error: channel %s not found in channel tables' % channel
 
 	def get_rf_channel(self,name):
 	#todo here is a catch - only rf channels are returned
@@ -1933,6 +1991,7 @@ class PulseSequence:
 		self._prepare_channel_labels()
 
 	def _update_height_limits(self,val,habove,hbelow):
+		print 'in _update_height_limits val=%s' % val
 		if val < 0:
 			if abs(val) > hbelow:
 				hbelow = abs(val)
@@ -1960,11 +2019,15 @@ class PulseSequence:
 								if h > habove:
 									habove = h
 						elif type == 'pfg':
+							print e
 							if e.alternated:
+								print 'i am alternated'
 								(habove,hbelow) = self._update_height_limits(e.drawing_height[0],habove,hbelow)
 								(habove,hbelow) = self._update_height_limits(e.drawing_height[1],habove,hbelow)
 							else:
+								print 'i am not alternated val=%s' % e.name
 								(habove,hbelow) = self._update_height_limits(e.drawing_height,habove,hbelow)
+								print 'i am still ok'
 						else:
 							raise 'internal error'
 
@@ -1996,15 +2059,7 @@ class PulseSequence:
 
 
 	def _init_drawing_parameters(self):
-		self.channel_drawing_height = 35 
-		self.margin_above = 40
-		self.margin_below = 20
-		self.margin_right = 20
-		self.margin_left = 20
-		self._bottom_drawing_limit =self.margin_above
-		self.image_mode = 'L'
-		self.fg_color = 0
-		self.bg_color = 256
+		#a whole bunch of drawing parameters moved to PulseSequence.__init__()
 		w = int(self._glist[-1].xcoor)
 		self.drawing_width = w
 
@@ -2147,7 +2202,7 @@ class PulseSequence:
 		self._init_drawing_object()#calculate channel y-offsets and image height
 		(file,link) = self._create_output_file()
 		self._draw(file)
-		print link 
+		print link #prints url to the newly created image
 
 	def _recalc_anchor_group_delays(self,g,pre_dly):
 		"""update expression in the pre_dly
@@ -2361,6 +2416,7 @@ try:
 	#this will have to be cleaned out in the next version
 	#probably time() routine needs to be moved up into read()
 	#together with whatever it needs from _compile_init()
+	print seq
 	seq.draw()
 	#compiled.check_safety();
 	#compiled.print_varian()
