@@ -417,11 +417,19 @@ class Anchor:
 
 	def draw_tic(self,channel):
 		ps = self.pulse_sequence
-		ch = ps.get_rf_channel(channel)
+		ch = ps.get_channel(channel)
 		d = ps.get_draw_object()
 		x = self.xcoor
 		y = ch.ycoor
+		print "tic on channel %s, x=%d, y=%d" % (channel,x,y)
 		d.line(((x,y-3),(x,y+3)))
+
+	def draw_tics_on_all_channels(self):
+		ps = self.pulse_sequence
+		chlist = ps.get_channel_list()
+		print "drawing tics for anchor %s" % self.name
+		for channel in chlist:
+			self.draw_tic(channel)
 
 	def add_event(self,event):
 
@@ -530,7 +538,6 @@ class AnchorGroup:
 
 	def set_xcoor(self,xcoor): #AnchorGroup.set_xcoor()
 
-		print 'setting xcoor for anchor group x=%d' % xcoor
 		self.xcoor = xcoor
 		ta = self.timed_anchor
 		al = self.anchor_list
@@ -565,6 +572,10 @@ class AnchorGroup:
 	def set_timing_anchor(self,a_name):
 		a = self.get_anchor(a_name)
 		self.timing_anchor = a
+
+	def draw_all_tics(self):#AnchorGroup.draw_all_tics()
+		for a in self.anchor_list:
+			a.draw_tics_on_all_channels()
 
 	def _bootstrap_objects(self,ps_obj):
 		self.pulse_sequence = ps_obj
@@ -800,6 +811,12 @@ class PulseSequenceElement:
 		w = self.drawing_width
 		h = self.drawing_height
 
+		if self.__dict__.has_key('edge'):
+			if self.edge == 'left':
+				x = x + w/2	
+			elif self.edge == 'right':
+				x = x - w/2
+
 		bg = self.pulse_sequence.bg_color
 		fg = self.pulse_sequence.fg_color
 
@@ -1019,7 +1036,7 @@ class Pulse(PulseSequenceElement):
 			self.drawing_height = maxh
 		PulseSequenceElement.calc_drawing_dimensions(self)
 
-	def draw(self,draw_obj):
+	def draw(self,draw_obj):#Pulse.draw()
 		print 'drawing pulse %s channel=%s x=%d y=%d' % (self.name, self.channel, self.xcoor, self.ycoor)
 		if self.type in ('90','180','lp','rect'):
 			PulseSequenceElement.draw_up_rect_pulse(self,draw_obj)
@@ -1325,6 +1342,39 @@ class PulseSequence:
 			return ct[name]
 		else:
 			raise ParsingError("There is no rf channel '%s'" % name)
+
+	def get_pfg_channel(self,name): #need to be merged into one get_channel
+	#todo here is a catch - only rf channels are returned
+		ct = self._pfg_channel_table
+		if ct.has_key(name):
+			return ct[name]
+		else:
+			raise ParsingError("There is no pfg channel '%s'" % name)
+
+	def get_channel(self,name):
+		"""return channel data by name
+		will raise error if channel is not found
+		"""
+		try:
+			ch = self.get_rf_channel(name)
+		except:
+			try:
+				ch = self.get_pfg_channel(name)
+			except:
+				raise ParsingError("channel %s no found in rf & pfg channel lists" % name)
+		return ch
+
+	def get_channel_list(self):
+		"""return unordred list of names of all channels
+		"""
+		rft = self._rf_channel_table
+		pft = self._pfg_channel_table
+		names = {}
+		for key in rft.keys() + pft.keys():
+			if names.has_key(key):
+				raise ParsingError("Duplicate channel %s. Please use unique names for channels" % key)
+			names[key] = 1
+		return names.keys()
 
 	def get_draw_object(self):
 		return self._draw_object
@@ -1906,7 +1956,7 @@ class PulseSequence:
 		self._parse_variables('gradients',{'length':'float',
 						'strength':'float',
 						'type':'str',
-						'edge_align':'str',
+						'edge':{'type':'str','values':['center','left','right']},
 						'label':'str'})
 		self._parse_gradient_values()#for echo-antiecho type gradients 
 									 #(comma separated strength values)
@@ -2128,7 +2178,9 @@ class PulseSequence:
 		for d in dl:
 			d.draw(self._draw_object)
 
-	def _draw(self,file):
+	def _draw(self,file):#PulseSequence._draw()
+		"""PS objects internal drawing function
+		"""
 		d = self._draw_object
 		anchors = self.anchor_list
 
@@ -2165,14 +2217,16 @@ class PulseSequence:
 					e.draw(d)
 					
 		self._draw_delays()
-		self._draw_decorations()
+		self._draw_decorations() #dummy call for now
+		self.draw_all_tics() #debug
 		self._make_space_for_channel_labels()
 		self._draw_channel_labels()
 		self._save_image()
 
 	def _make_space_for_channel_labels(self):
-		import ImageChops
+		import ImageChops,ImageDraw
 		self._image = ImageChops.offset(self._image,self.margin_left,0)
+		self._draw_object = ImageDraw.Draw(self._image) #add this because we need updated object
 
 	def _draw_channel_labels(self):
 		x = self.margin_left - 3
@@ -2226,6 +2280,10 @@ class PulseSequence:
 		self._read_code()
 		self._parse_code()
 		self._bootstrap_objects()#purpose of this: make way up to pulse seq from objects
+
+	def draw_all_tics(self):#PulseSequence.draw_all_tics()
+		for g in self._glist:
+			g.draw_all_tics()
 
 	def draw(self):
 		"""Creates pulse sequence png drawing based
@@ -2389,7 +2447,7 @@ class PulseSequence:
 
 		pre_dly_expr = E('set',N(0))
 
-		#first pass on input code - substract durations of elements from
+		#first pass on input code - subtract durations of elements from
 		#delays between anchor groups
 		for g in groups:
 			expr = E('sub',pg.post_delay,pre_dly_expr)
@@ -2410,10 +2468,15 @@ class PulseSequence:
 			dly = pg.post_delay
 			dly.start_anchor = pg
 
-			last_anchor = g.anchor_list.pop()
+			import copy
 
-			for a in g.anchor_list:
+			anchor_list = copy.copy(g.anchor_list)
+			last_anchor = anchor_list.pop()
+			print last_anchor
+
+			for a in anchor_list:
 				ng = self._compile_add_anchor_group(a)
+				print a
 				dly.end_anchor = a
 				dly = self._compile_add_delay(E('set',N(0)))
 				ng.post_delay = dly
@@ -2455,11 +2518,8 @@ try:
 	#this will have to be cleaned out in the next version
 	#probably time() routine needs to be moved up into read()
 	#together with whatever it needs from _compile_init()
-	pulses = seq.get_events(channel='H')
-	for p in pulses:
-		print p
 	seq.draw()
-	print seq._image.size
+	#print seq._image.size
 	#compiled.check_safety();
 	#compiled.print_varian()
 	sys.exit(0)
