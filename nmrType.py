@@ -391,10 +391,20 @@ class Anchor:
 			e.set_xcoor()
 
 	def has_event(self,channel):
+		e = self.get_event(channel)
+		if e == None:
+			return False
+		else:
+			return True
+
+	def get_event(self,channel):
+		"""assumes that there can be only one
+		event per channel per anchor
+		"""
 		for e in self.events:
 			if e.channel == channel:
-				return True
-		return False
+				return e
+		return None 
 
 	def get_events(self,channel=None): #Anchor.get_events()
 		channel = self.pulse_sequence.get_channel_key(channel)
@@ -421,8 +431,13 @@ class Anchor:
 		d = ps.get_draw_object()
 		x = self.xcoor
 		y = ch.ycoor
-		print "tic on channel %s, x=%d, y=%d" % (channel,x,y)
-		d.line(((x,y-3),(x,y+3)))
+		print "tic on channel %s, anchor %s, x=%d, y=%d" % (channel,self.name,x,y)
+		deltay_above = ps.blank_tic_size
+		deltay_below = ps.blank_tic_size 
+		if self.has_event(channel):
+			deltay_above = 0
+			deltay_below = ps.event_tic_size
+		d.line(((x,y-deltay_above),(x,y+deltay_below)))
 
 	def draw_tics_on_all_channels(self):
 		ps = self.pulse_sequence
@@ -499,33 +514,51 @@ class AnchorGroup:
 		self.drawing_post_width = al[last].xcoor + al[last].drawing_post_width
 		self.drawing_width = self.drawing_pre_width + self.drawing_post_width
 
-	def get_drawing_pre_width(self,channel = None): #AnchorGroup.get_drawing_pre_width()
+	def get_drawing_pre_width(self,delay): #AnchorGroup.get_drawing_pre_width()
 		"""get drawing_pre_width on a given channel for the anchor group
 		if channel==None, use first channel (first line with rf header)
 		"""
+		channel = delay.show_at
 		ps = self.pulse_sequence
 		channel = ps.get_channel_key(channel)
+		channel_events = self.get_events(channel=channel)
+		if len(channel_events):
+			ea = delay.end_anchor
+			xcoor = ea.xcoor
+			if ea.has_event(channel):
+				xcoor = xcoor - ea.get_event(channel).drawing_pre_width
 
-		print 'in get_drawing_pre_width xcoor=%d' % self.xcoor
+			for e in channel_events:
+				if e.anchor.xcoor < xcoor:
+					xcoor = e.anchor.xcoor - e.drawing_pre_width
+			return self.xcoor - xcoor
+		else:
+			return 0
 
-		xcoor = self.drawing_post_width + self.xcoor
-		for e in self.get_events(channel=channel):
-			if e.anchor.xcoor < xcoor:
-				xcoor = e.anchor.xcoor - e.drawing_pre_width
-		return self.xcoor - xcoor
-
-	def get_drawing_post_width(self,channel = None):
+	def get_drawing_post_width(self,delay): #AnchorGroup.get_drawing_post_width
 		"""get drawing_post_width on a given channel for the anchor group
-		if channel==None, use first channel (first line with rf header)
 		"""
+		channel = delay.show_at
 		ps = self.pulse_sequence
 		channel = ps.get_channel_key(channel)
 
-		xcoor = self.xcoor - self.drawing_pre_width
-		for e in self.get_events(channel=channel):
-			if e.anchor.xcoor > xcoor:
-				xcoor = e.anchor.xcoor + e.drawing_post_width
-		return xcoor - self.xcoor
+		channel_events = self.get_events(channel=channel)
+
+		if len(channel_events) > 0:
+			sa = delay.start_anchor
+			xcoor = sa.xcoor
+			if sa.has_event(channel):
+				xcoor = xcoor + sa.get_event(channel).drawing_post_width
+				
+			xcoor = delay.start_anchor.xcoor #left drawing edge
+			for e in channel_events:
+				try_xcoor = e.anchor.xcoor + e.drawing_post_width
+				if try_xcoor > xcoor:
+					xcoor = try_xcoor
+			return xcoor - self.xcoor
+		else:
+			return 0
+
 
 	def get_events(self,channel=None): #AnchorGroup.get_events()
 		events = []
@@ -670,6 +703,9 @@ class PulseSequenceElement:
 		"""
 		return self.pulse_sequence.channel_drawing_height
 
+	def set_ycoor(self,ycoor):
+		self.ycoor = ycoor
+
 	def time(self): # PulseSequenceElement.time()
 		"""calculate pre_span and post_span expressions
 
@@ -753,6 +789,7 @@ class PulseSequenceElement:
 		y1 = self.ycoor
 
 		x2 = self.anchor.xcoor
+
 		y2 = y1 - self.drawing_height*self.h1/100
 
 		x3 = self.end_anchor.xcoor
@@ -778,7 +815,7 @@ class PulseSequenceElement:
 
 	def draw_up_arc_pulse(self,draw_obj,order=0.5):
 		d = draw_obj
-		x = self.xcoor
+		x = self.edge_calc_x()
 		y = self.ycoor
 		w = self.drawing_width
 		h = self.drawing_height
@@ -802,20 +839,26 @@ class PulseSequenceElement:
 
 	def draw_up_shaped_pulse(self,draw_obj):
 		self.draw_up_arc_pulse(draw_obj,4)
-			
-		
-	def draw_up_rect_pulse(self,draw_obj):
-		d = draw_obj
-		x = self.xcoor
-		y = self.ycoor
-		w = self.drawing_width
-		h = self.drawing_height
 
+	def edge_calc_x(self):
+		"""calculate x offset according to "edge" anchor alignment setting
+		"""
+		w = self.drawing_width
+		x = self.xcoor
 		if self.__dict__.has_key('edge'):
 			if self.edge == 'left':
 				x = x + w/2	
 			elif self.edge == 'right':
 				x = x - w/2
+		return x
+		
+	def draw_up_rect_pulse(self,draw_obj):
+		d = draw_obj
+		y = self.ycoor
+		w = self.drawing_width
+		h = self.drawing_height
+
+		x = self.edge_calc_x()
 
 		bg = self.pulse_sequence.bg_color
 		fg = self.pulse_sequence.fg_color
@@ -901,7 +944,7 @@ class Delay(PulseSequenceElement):
 		print 'setting xcoor for delay %s x=%d' % (self.name,xcoor)
 		self.xcoor = xcoor
 
-	def calc_drawing_width(self):
+	def calc_drawing_width(self): #Delay.calc_drawing_width()
 		"""if delay is hidden, then default width is returned
 		otherwise an image is generated from label
 		then the resulting value taken directly from the image width
@@ -916,15 +959,13 @@ class Delay(PulseSequenceElement):
 		self.image = latex2image(text)
 		self.drawing_width = self.image.size[0]
 
-	def draw_bounding_tics(self):
+	def draw_bounding_tics(self):#Delay.draw_bounding_tics()
 		"""a tic mark will be drawn on a side where anchor has no attached events
 		"""
 		start = self.start_anchor
 		end = self.end_anchor
-		if not start.has_event(self.show_at):
-			start.draw_tic(self.show_at)
-		if not end.has_event(self.show_at):
-			end.draw_tic(self.show_at)
+		start.draw_tic(self.show_at)
+		end.draw_tic(self.show_at)
 
 	def draw(self,draw_obj): #Delay.draw()
 		"""this routine is really drawing a delay label text, and does nothing if 
@@ -968,7 +1009,7 @@ class WideEventToggle(PulseSequenceElement):
 	get_channel() getter is needed for PulseSequenceElement
 	so that channel will be read from the wide event iself?
 	"""
-	def __init__(self,type,event):
+	def __init__(self,type='on',event=None):
 		PulseSequenceElement.__init__(self)
 		self._type = 'wide_event_toggle'
 		if type not in ('on','off'):
@@ -978,8 +1019,18 @@ class WideEventToggle(PulseSequenceElement):
 
 	def get_eqn_str(self):
 		return self.event.get_eqn_str()
+
+	def set_ycoor(self,ycoor):
+		PulseSequenceElement.set_ycoor(self,ycoor)
+		self.event.ycoor = ycoor
+
+	def set_xcoor(self,xcoor=None): #WideEventToggle.set_xcoor()
+		PulseSequenceElement.set_xcoor(self,xcoor)
+		self.event.xcoor = self.xcoor
+
 	def draw(self,draw_obj): #WideEventToggle.draw()
-		pass #dont get in the way yet
+		if self.type == 'on':
+			self.event.draw(draw_obj)
 
 class Pulse(PulseSequenceElement):
 	"""class for RF pulse
@@ -1043,8 +1094,10 @@ class Pulse(PulseSequenceElement):
 		elif self.type == 'shp':
 			PulseSequenceElement.draw_up_shaped_pulse(self,draw_obj)
 
+		xcoor = self.edge_calc_x()
+
 		if self.label != None:
-			coor = (self.xcoor,self.ycoor - self.drawing_height - 3) #todo: fix magic number drawing offset
+			coor = (xcoor,self.ycoor - self.drawing_height - 3) #todo: fix magic number drawing offset
 			draw_latex(self.label,self.pulse_sequence,coor,yplacement='above')
 			
 		if self.phase != None:
@@ -1059,7 +1112,7 @@ class Pulse(PulseSequenceElement):
 				raise 'internal error unknown type of phase object'
 
 			seq = self.pulse_sequence
-			coor = (self.xcoor,self.ycoor - self.drawing_height - 3)
+			coor = (xcoor,self.ycoor - self.drawing_height - 3)
 			draw_latex(text,seq,coor,yplacement='above')
 			
 
@@ -1069,8 +1122,8 @@ class WidePulse(Pulse):
 		self._type = 'rf_wide_pulse'
 		self.end_anchor = None
 		self.label = None
-		self.h1 = None
-		self.h2 = None
+		self.h1 = 100 #default 100% start height
+		self.h2 = 100 #default 100% end height
 		self.maxh = None
 
 	def get_eqn_str(self):
@@ -1186,10 +1239,12 @@ class GradPulse(PulseSequenceElement):
 
 		y = self.bottom_ycoor()
 
+		xcoor = self.edge_calc_x()
+
 		text = self.name
 		if self.label != None:
 			text = self.label
-		draw_latex(text,self.pulse_sequence,(int(self.xcoor),int(y + 3)),yplacement='below')
+		draw_latex(text,self.pulse_sequence,(xcoor,int(y + 3)),yplacement='below')
 
 class WideGradPulse(GradPulse):
 	def __init__(self,name,channel):
@@ -1244,6 +1299,9 @@ class PulseSequence:
 		self.margin_below = 20
 		self.margin_right = 20
 		self.margin_left = 20
+		self.event_tic_size = 4
+		self.blank_tic_size = 3
+		self.delay_margin_sides = 3
 		self._bottom_drawing_limit =self.margin_above
 		self.image_mode = 'L'
 		self.fg_color = 0
@@ -1264,8 +1322,8 @@ class PulseSequence:
 			cdelay = cg.post_delay
 
 			#drawing_pre_width and post_width at channel where delay is to be drawn
-			g_d_pre_w = g.get_drawing_pre_width(cdelay.show_at)
-			cg_d_post_w = cg.get_drawing_post_width(cdelay.show_at)
+			g_d_pre_w = g.get_drawing_pre_width(cdelay) + self.delay_margin_sides
+			cg_d_post_w = cg.get_drawing_post_width(cdelay) + self.delay_margin_sides
 			cg_d_end_xcoor = cg.xcoor + cg_d_post_w
 
 			d_w = cdelay.drawing_width
@@ -1275,15 +1333,17 @@ class PulseSequence:
 			print cg_d_post_w, g_d_pre_w
 			print cg.drawing_post_width, g.drawing_pre_width
 
-			#try new g_xcoor as if cg and g were touching
+			#try new g_xcoor as if cg and g were touching - across channels this time
 			g_xcoor = cg.xcoor + cg.drawing_post_width + g.drawing_pre_width
 
 			#calc xcoor for g so that delay label fits on channel "show_at"
 			#and anchor groups don't overlap
 			if cg_d_end_xcoor > g_xcoor - g_d_pre_w - d_w:
+				#cdelay label doesn't fit, so move g.xcoor forward so that delay fits
 				xcoor = cg_d_end_xcoor + d_w + g_d_pre_w
 				print 'here'
 			else:
+				#turns out delay fits this way, accept initial guess
 				xcoor = g_xcoor
 				print 'there'
 
@@ -1295,12 +1355,12 @@ class PulseSequence:
 		g.set_xcoor(xcoor)
 
 		#now we can calculate widths of wide events (those attached to two anchors)
-		for g in self._glist:
-			al = g.anchor_list
-			for a in al:
-				for e in a.events:
-					if e.is_pegged():
-						e.calc_drawing_dimensions()
+		#for g in self._glist:
+		#	al = g.anchor_list
+		#	for a in al:
+		#		for e in a.events:
+		#			if type(e) == type(WideEventToggle()):
+		#				e.set_xcoor(a.xcoor)
 
 	def get_events(self,channel=None): #PulseSequence.get_events()
 		events = []
@@ -1322,7 +1382,6 @@ class PulseSequence:
 
 		if channel==None:
 			return self._rf_channel_order[0]
-
 		
 		rf = rf_ct.has_key(channel)
 		pfg = pfg_ct.has_key(channel)
@@ -2179,7 +2238,7 @@ class PulseSequence:
 			d.draw(self._draw_object)
 
 	def _draw(self,file):#PulseSequence._draw()
-		"""PS objects internal drawing function
+		"""PulseSequence object's internal drawing function
 		"""
 		d = self._draw_object
 		anchors = self.anchor_list
@@ -2207,9 +2266,11 @@ class PulseSequence:
 				for e in a.events:
 					ch = e.channel	
 					#e.xcoor = x
-					e.ycoor = self._calc_event_ycoor(e)
+					e.set_ycoor( self._calc_event_ycoor(e) )
 					e.draw(d)
 			elif a.type == 'pegging':
+				print "what the heck"
+				sys.exit()
 				for e in a.events:
 					ch = e.channel
 					#e.xcoor = x + e.drawing_width/2 + 1 #+1 may be a bad hack
@@ -2218,7 +2279,7 @@ class PulseSequence:
 					
 		self._draw_delays()
 		self._draw_decorations() #dummy call for now
-		self.draw_all_tics() #debug
+		#self.draw_all_tics() #debug
 		self._make_space_for_channel_labels()
 		self._draw_channel_labels()
 		self._save_image()
