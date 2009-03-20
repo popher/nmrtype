@@ -312,6 +312,11 @@ class Anchor:
 		for e in self.events:
 			e._bootstrap(ps_obj)
 
+	def get_max_xcoor(self):#Anchor.get_max_xcoor()
+		x = self.xcoor
+		pw = self.drawing_post_width
+		return x+pw
+
 	def determine_type(self):
 		"""determine type of anchor "normal|pegging"
 		assign corresponding value of type variable
@@ -506,6 +511,9 @@ class AnchorGroup:
 		#calculate anchor coordinates in the anchor group relative to timed anchor
 		self.set_xcoor(0)
 		self.calc_drawing_width()
+
+	def get_max_xcoor(self):
+		return self.anchor_list[-1].get_max_xcoor()
 
 	def calc_drawing_width(self):
 		al = self.anchor_list
@@ -703,7 +711,7 @@ class PulseSequenceElement:
 		"""
 		return self.pulse_sequence.channel_drawing_height
 
-	def set_ycoor(self,ycoor):
+	def set_ycoor(self,ycoor):#PulseSequenceElement.set_ycoor()
 		self.ycoor = ycoor
 
 	def time(self): # PulseSequenceElement.time()
@@ -872,16 +880,19 @@ class PulseSequenceElement:
 		d = draw_obj
 		x = self.xcoor
 		y = self.ycoor
-		w = self.drawing_width
-		h = self.drawing_height
+		#w = self.drawing_width
+		w = self.pulse_sequence.acq_drawing_width
+		h = self.pulse_sequence.acq_drawing_height
 		xval = arange(w)
-		yval = multiply(h,multiply(-sin(multiply(xval,0.6)),exp(multiply(-0.04,xval))))
-		xval = add(xval,x-w/2)
+		yval = multiply(h,multiply(-sin(multiply(xval,0.6)),exp(multiply(-0.05,xval))))
+		xval = add(xval,x)
 		yval = add(yval,y)
 		fg = self.pulse_sequence.fg_color
 		bg = self.pulse_sequence.bg_color
 
-		d.line(((x-w/2,y),(x+w/2-1,y)),fill=bg)
+		print "fid xcoor=%d ycoor=%d h=%d" % (x,y,h)
+
+		d.line(((x,y),(x+w-1,y)),fill=bg)
 
 		x1 = xval[0]
 		y1 = yval[0]
@@ -902,7 +913,9 @@ class Phase(PulseSequenceElement):
 		self.label = None
 		self.table = None
 	def __str__(self):
-		return self.name + ' ' + self.label + ' ' + self.table
+		str = self.name + ' ' + self.label
+		str = str + ' ' + self.table.__str__()
+		return str
 
 class Delay(PulseSequenceElement):
 	def __init__(self,name,expr=None):
@@ -941,7 +954,6 @@ class Delay(PulseSequenceElement):
 	def set_xcoor(self,xcoor): #Delay.set_xcoor()
 		"""set x coordinate of delay
 		"""
-		print 'setting xcoor for delay %s x=%d' % (self.name,xcoor)
 		self.xcoor = xcoor
 
 	def calc_drawing_width(self): #Delay.calc_drawing_width()
@@ -1026,10 +1038,16 @@ class WideEventToggle(PulseSequenceElement):
 
 	def set_xcoor(self,xcoor=None): #WideEventToggle.set_xcoor()
 		PulseSequenceElement.set_xcoor(self,xcoor)
-		self.event.xcoor = self.xcoor
+		if self.type == 'on':
+			self.event.xcoor = self.xcoor
+
+	def calc_drawing_dimensions(self):
+		if self.type == 'on':
+			self.event.calc_drawing_dimensions()
 
 	def draw(self,draw_obj): #WideEventToggle.draw()
 		if self.type == 'on':
+			print "drawing wide event %s" % self.event.name
 			self.event.draw(draw_obj)
 
 class Pulse(PulseSequenceElement):
@@ -1131,7 +1149,7 @@ class WidePulse(Pulse):
 
 	def calc_drawing_dimensions(self):
 		#this needs to be redone, b/c width now goes by delay widths
-		self.drawing_width = self.end_anchor.xcoor - self.anchor.xcoor
+		#self.drawing_width = self.end_anchor.xcoor - self.anchor.xcoor
 		maxh = self.get_maxh()
 		if self.type in ('fid','echo'):
 			self.drawing_height = 0.7*maxh #magic number
@@ -1161,7 +1179,7 @@ class Acquisition(WidePulse):
 		self.type = 'fid' 
 		self.end_anchor = None
 		#display type: 'fid' or 'echo'
-		
+
 	def get_eqn_str(self):
 		return 'rcvr_toggle'
 
@@ -1295,6 +1313,8 @@ class PulseSequence:
 
 		#some constant drawing parameters
 		self.channel_drawing_height = 35 
+		self.acq_drawing_width = 70
+		self.acq_drawing_height = 35
 		self.margin_above = 40
 		self.margin_below = 20
 		self.margin_right = 20
@@ -1313,6 +1333,9 @@ class PulseSequence:
 		#calculate minimal necessary delay drawing widths
 		for d in self._delay_list:
 			d.calc_drawing_width()#no need to give height here
+
+		#separately set acq delay width to default value
+		self.set_acq_delay_drawing_widths()
 
 		glist = iter(self._glist)
 		cg = glist.next()
@@ -1361,6 +1384,39 @@ class PulseSequence:
 		#		for e in a.events:
 		#			if type(e) == type(WideEventToggle()):
 		#				e.set_xcoor(a.xcoor)
+
+	def get_all_events(self):#PulseSequence.get_all_events()
+		"""temporary function need to fix main event getter
+		get_events() and make it more flexible (jquery style?)	
+		this function uses objects quite inappropriately
+		"""
+		events = []
+		for g in self._glist:
+			for a in g.anchor_list:
+				for e in a.events:
+					if e._type == 'wide_event_toggle': #bad style, access private property!!
+						if e.type == 'on':
+							events.append(e.event)
+					else:
+						events.append(e)
+		return events
+
+	def set_acq_delay_drawing_widths(self):
+		#get list of acq events
+		events = self.get_all_events()
+		acq = []
+		for e in events:
+			if e._type == 'acq': #accessing private class member
+				acq.append(e)
+
+		#for each event find delay that corresponds to event
+		#and set it's drawing_width
+		for e in acq:
+			start = e.anchor
+			end = e.end_anchor
+			for d in self._delay_list:
+				if d.start_anchor == start and d.end_anchor == end:
+					d.drawing_width = self.acq_drawing_width
 
 	def get_events(self,channel=None): #PulseSequence.get_events()
 		events = []
@@ -1882,7 +1938,7 @@ class PulseSequence:
 				for v in val_list:
 					typecasted_val = self._typecast_value(v,val_type)
 					typecasted_val_list.append(typecasted_val)
-				if length(typecasted_val_list == 1):
+				if len(typecasted_val_list) == 1:
 					return typecasted_val_list[0]
 				else:
 					return typecasted_val_list
@@ -2013,7 +2069,7 @@ class PulseSequence:
 						'type':'str'})
 
 		self._parse_variables('gradients',{'length':'float',
-						'strength':'float',
+						'strength':'float-list',
 						'type':'str',
 						'edge':{'type':'str','values':['center','left','right']},
 						'label':'str'})
@@ -2200,7 +2256,7 @@ class PulseSequence:
 
 	def _init_drawing_parameters(self):
 		#a whole bunch of drawing parameters moved to PulseSequence.__init__()
-		w = int(self._glist[-1].xcoor)
+		w = int(self._glist[-1].get_max_xcoor()) #x coordinate of last anchor
 		for g in self._glist:
 			print g.xcoor
 			
@@ -2300,6 +2356,7 @@ class PulseSequence:
 		file = self._image_file
 		import ImageFilter
 		self._image = self._image.filter(ImageFilter.SHARPEN)
+		print "image size is %dx%d" % (self._image.size[0], self._image.size[1])
 		self._image.save(file)
 
 	def _bootstrap_objects(self):
@@ -2346,16 +2403,16 @@ class PulseSequence:
 		for g in self._glist:
 			g.draw_all_tics()
 
-	def draw(self):
+	def draw(self):#PulseSequence.draw()
 		"""Creates pulse sequence png drawing based
 		on fully initialized PulseSequence object
 		"""
 		self._init_drawing_parameters()#set basic drawing parameters
 		self._prepare_for_drawing()#determine sizes of all objects
 		self._init_drawing_object()#calculate channel y-offsets and image height
-		(file,link) = self._create_output_file()
-		self._draw(file)
-		print link #prints url to the newly created image
+		#(file,link) = self._create_output_file()
+		self._draw('test.gif')
+		#print link #prints url to the newly created image
 
 	def _recalc_anchor_group_delays(self,g,pre_dly):
 		"""update expression in the pre_dly

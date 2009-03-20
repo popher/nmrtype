@@ -1,5 +1,4 @@
 anchors:  @a      @b        @c         @d          @e-------------f    @g
-disp:    4@a     5@b       7@c        5@d        11@e                 8@g
 time: rlx @a t1   @b tm     @c t2      @d spinlock @e-------------f aq @g
 rf H:   90@a=p1  90@b=p2  90@c=p3   cpd@d-----------e=mlev17  acq@f-----g
 
@@ -10,5 +9,5 @@ delay tm: label=t_{m,noe}
 pulse p1: edge=left comp=after
 pulse p2: edge=right comp=before
 pulse p3: edge=left comp=after
-delay spinlock: hide=true
-cpd   mlev17: label=MLEV-17
+delay spinlock: label=spinlock label_yoffset=-12
+cpd mlev17: h1=50 h2=50

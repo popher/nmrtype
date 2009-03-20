@@ -1,5 +1,4 @@
 anchors:       @a          @a1,b      @b1,c     @c1,d,d1        @e     @f     @g     @h    @j0,j,j1    @i--k        @l
-disp:         6@a            6@b        6@c       6@d         12@e   12@f    9@g    6@h      6@j      6@i         12@l  
 time:    rlx   @a  t1         @b  t2     @c t3     @d  T1a      @e T1b @f T12 @g T12 @h d     @j     d @i--k   aq   @l
 rf H:        90@a                                                          180@g                       acq@k---------l   
 rf 13C:                     90@b       90@c      90@d        180@e   90@f=p1               180@j      90@i=p2  
