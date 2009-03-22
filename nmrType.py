@@ -8,6 +8,7 @@ latex_dir = '/usr/local/texlive/2008/bin/x86_64-linux/'
 IMAGE_DIR = '/var/www/vhosts/default/htdocs/nmrwiki/wiki/images/NMRPulse' #where to put image files
 IMAGE_DIR_URL = 'http://nmrwiki.org/wiki/images/NMRPulse'
 from Numeric import *
+import copy
 
 #including slash in the end use blank if all is in paths
 #settings for hostmonster
@@ -34,6 +35,10 @@ blanks_re = re.compile(r'\s\s+')
 """@package docstring
 nmrType creates pulse sequence image from a simple text markup
 """
+
+#todo these functions need to be packaged
+def carray(array):
+	return '{'+ ','.join(map(lambda x: str(x),array)) + '}'
 
 def latex2image(text):
 	"""creates png files from latex source
@@ -436,7 +441,6 @@ class Anchor:
 		d = ps.get_draw_object()
 		x = self.xcoor
 		y = ch.ycoor
-		print "tic on channel %s, anchor %s, x=%d, y=%d" % (channel,self.name,x,y)
 		deltay_above = ps.blank_tic_size
 		deltay_below = ps.blank_tic_size 
 		if self.has_event(channel):
@@ -447,7 +451,6 @@ class Anchor:
 	def draw_tics_on_all_channels(self):
 		ps = self.pulse_sequence
 		chlist = ps.get_channel_list()
-		print "drawing tics for anchor %s" % self.name
 		for channel in chlist:
 			self.draw_tic(channel)
 
@@ -890,8 +893,6 @@ class PulseSequenceElement:
 		fg = self.pulse_sequence.fg_color
 		bg = self.pulse_sequence.bg_color
 
-		print "fid xcoor=%d ycoor=%d h=%d" % (x,y,h)
-
 		d.line(((x,y),(x+w-1,y)),fill=bg)
 
 		x1 = xval[0]
@@ -1047,7 +1048,6 @@ class WideEventToggle(PulseSequenceElement):
 
 	def draw(self,draw_obj): #WideEventToggle.draw()
 		if self.type == 'on':
-			print "drawing wide event %s" % self.event.name
 			self.event.draw(draw_obj)
 
 class Pulse(PulseSequenceElement):
@@ -1056,7 +1056,7 @@ class Pulse(PulseSequenceElement):
 	def __init__(self,type,channel,name=None):
 		PulseSequenceElement.__init__(self)
 		self._type = 'rf_pulse'
-		self.type = type
+		self.type = type #90,180, shp, rect, etc
 		self.name = name
 		#extra stuff
 		self.length = None 
@@ -1106,7 +1106,6 @@ class Pulse(PulseSequenceElement):
 		PulseSequenceElement.calc_drawing_dimensions(self)
 
 	def draw(self,draw_obj):#Pulse.draw()
-		print 'drawing pulse %s channel=%s x=%d y=%d' % (self.name, self.channel, self.xcoor, self.ycoor)
 		if self.type in ('90','180','lp','rect'):
 			PulseSequenceElement.draw_up_rect_pulse(self,draw_obj)
 		elif self.type == 'shp':
@@ -1351,11 +1350,6 @@ class PulseSequence:
 
 			d_w = cdelay.drawing_width
 
-			print 'drawing width for delay %s is %d' % (cdelay.name,cdelay.drawing_width)
-
-			print cg_d_post_w, g_d_pre_w
-			print cg.drawing_post_width, g.drawing_pre_width
-
 			#try new g_xcoor as if cg and g were touching - across channels this time
 			g_xcoor = cg.xcoor + cg.drawing_post_width + g.drawing_pre_width
 
@@ -1364,13 +1358,9 @@ class PulseSequence:
 			if cg_d_end_xcoor > g_xcoor - g_d_pre_w - d_w:
 				#cdelay label doesn't fit, so move g.xcoor forward so that delay fits
 				xcoor = cg_d_end_xcoor + d_w + g_d_pre_w
-				print 'here'
 			else:
 				#turns out delay fits this way, accept initial guess
 				xcoor = g_xcoor
-				print 'there'
-
-			print 'new value of xcoor is %d' % xcoor
 
 			cdelay.set_xcoor((cg_d_end_xcoor + xcoor - g_d_pre_w)/2)
 			cg = g
@@ -1401,6 +1391,32 @@ class PulseSequence:
 						events.append(e)
 		return events
 
+	def get_phase_tables(self):
+		events = self.get_all_events()  #bug re-using crappy function
+		phases = []
+		for e in events:
+			if e._type == 'rf_pulse' or e._type == 'acq': #bad access private property
+				if e.phase != None:
+					phases.append(e.phase)
+		return phases
+
+	def get_pulses(self):
+		return self.get_elements('rf_pulse')
+
+	def get_delays(self):
+		return self._delay_list
+
+	def get_gradients(self):
+		return self.get_elements('pfg')
+
+	def get_elements(self,type):
+		events = self.get_all_events()
+		elements = []
+		for e in events:
+			if e._type == type:
+				elements.append(e)
+		return elements
+		
 	def set_acq_delay_drawing_widths(self):
 		#get list of acq events
 		events = self.get_all_events()
@@ -1627,34 +1643,6 @@ class PulseSequence:
 		#todo get this done before release
 		pass
 
-	def _parse_disp(self):
-		code = self._code['disp'].code
-		self._validate_anchor_order(code)
-
-		bits = code.split()
-		disp_re = re.compile(r'^(\+)?(\d+|\d*\.\d+)@(%s)$' % label_regex_token) #anchor_name
-
-		cdisp = 0
-		for bit in bits:
-			m = disp_re.match(bit)
-			if m:
-				rel = m.group(1)
-				disp = int(m.group(2))*10
-				a_name = m.group(3)
-				a = self.get_anchor(a_name)
-				g = a.group
-				#if g.timed_anchor != a:
-				#	raise ParsingError('problem with anchor %s:' % ('@' + a_name) \
-				#					+ ' all anchors in disp line must be timed')#why?
-				if rel:
-					raise ParsingError('in entry %s <b>"+"</b> signs in disp line are no longer used, please delete them' % bit)
-				cdisp = cdisp + disp
-				g.xcoor = cdisp
-			else:
-				raise ParsingError('could not parse entry %s in disp line ' \
-						'entries are expected in the following format: ' \
-						'<positive number>@<anchor name>' % bit)
-
 	def _parse_time(self):
 		"""parses code of "time" line
 
@@ -1841,7 +1829,7 @@ class PulseSequence:
 					a_name = pm.group(2)
 					pulse_name = pm.group(4)
 					if not pulse_name:
-						pulse_name = 'p%s_%s' % (ch,pulse_type)
+						pulse_name = pulse_type
 					p = self._procure_object('rf_pulse',pulse_type,ch,name=pulse_name)
 					a = self.get_anchor(a_name)
 					p.anchor = a#anchor bug
@@ -2257,9 +2245,6 @@ class PulseSequence:
 	def _init_drawing_parameters(self):
 		#a whole bunch of drawing parameters moved to PulseSequence.__init__()
 		w = int(self._glist[-1].get_max_xcoor()) #x coordinate of last anchor
-		for g in self._glist:
-			print g.xcoor
-			
 		self.drawing_width = w
 
 	def _init_drawing_object(self):
@@ -2324,14 +2309,9 @@ class PulseSequence:
 					#e.xcoor = x
 					e.set_ycoor( self._calc_event_ycoor(e) )
 					e.draw(d)
-			elif a.type == 'pegging':
+			elif a.type == 'pegging': #todo this to be removed in new version
 				print "what the heck"
 				sys.exit()
-				for e in a.events:
-					ch = e.channel
-					#e.xcoor = x + e.drawing_width/2 + 1 #+1 may be a bad hack
-					e.ycoor = self._calc_event_ycoor(e)
-					e.draw(d)
 					
 		self._draw_delays()
 		self._draw_decorations() #dummy call for now
@@ -2356,7 +2336,6 @@ class PulseSequence:
 		file = self._image_file
 		import ImageFilter
 		self._image = self._image.filter(ImageFilter.SHARPEN)
-		print "image size is %dx%d" % (self._image.size[0], self._image.size[1])
 		self._image.save(file)
 
 	def _bootstrap_objects(self):
@@ -2473,7 +2452,7 @@ class PulseSequence:
 		_compile_add_wide_event_toggles() must be called before this
 		"""
 		cid = self._compile_cdelay_id
-		dly = Delay('auto_delay_%d' % cid,expr=expr) # delay expressions assignment
+		dly = Delay('dly%d' % cid,expr=expr) # delay expressions assignment
 		self.add_delay(dly)
 		self._compile_cdelay_id = cid + 1
 		return dly
@@ -2517,6 +2496,7 @@ class PulseSequence:
 					#before compile()
 		self._compile_src = src
 		self._compile_cdelay_id = 0 #index for the next delay created by compiler
+		self._primary_delay_list = src._delay_list
 
 		#bootstrap wide events to start and end_anchors
 		#this code probably must be moved upstream or handling of 
@@ -2586,15 +2566,11 @@ class PulseSequence:
 			dly = pg.post_delay
 			dly.start_anchor = pg
 
-			import copy
-
 			anchor_list = copy.copy(g.anchor_list)
-			last_anchor = anchor_list.pop()
-			print last_anchor
+			last_anchor = anchor_list.pop() #did a copy because of this pop() call
 
 			for a in anchor_list:
 				ng = self._compile_add_anchor_group(a)
-				print a
 				dly.end_anchor = a
 				dly = self._compile_add_delay(E('set',N(0)))
 				ng.post_delay = dly
@@ -2610,13 +2586,128 @@ class PulseSequence:
 		#insert frequency switch anchors
 		#have to do this in the middle of official delays
 
+	def _varian_init_phase_tables(self,phases):
+		i = 1
+		output = ['\t/* set phase tables */']
+		for ph in phases:
+			tname = 't%d' % i
+			text = '\tsettable(%s, %d, %s);' % (tname,len(ph.table),ph.name)
+			ph.varian_table_name = tname
+			output.append(text)	
+			i = i+1
+		return output
+
+	def _varian_declare_vars(self):
+		if len(self._pulse_list) + len(self._delay_list) + len(self._gradient_list) == 0:
+			return
+
+		out = ['double  /* declare variables */']
+
+		if len(self._pulse_list):
+			out.append('\n\t/* pulses */');
+
+		#here I have to work around a problem of many copies of elements
+		printed_pulses = []
+		for pulse in self._pulse_list: 
+
+			p_basename = pulse.type
+
+			if pulse.type == '180':  #define parameters for the 90 instead
+				p_basename = '90'
+			elif pulse.type != '90':
+				p_basename = pulse.name
+
+			p = '%s%s' % (pulse.channel,p_basename)
+
+			p_pwr = 'power_%s' % p
+			p_name = 'pw_%s' % p
+
+			pulse.varian_power_level = p_pwr  #varian_power_level
+			pulse.varian_pulse_name = p_name  #varian_pulse_name
+
+			if p not in printed_pulses: #here goes the workaround
+				out.append('\t%s = getval("%s"),' % (p_name,p_name))
+				out.append('\t%s = getval("%s"),\n' % (p_pwr,p_pwr))
+				printed_pulses.append(p)
+
+		delay_names = []
+		if len(self._delay_list):
+			out.append('\t/* calculated delays */')
+			for delay in self._delay_list:
+				d = delay.name
+				if d not in delay_names and delay.expr != None:
+					delay_names.append(d)
+
+		for i in range(0,int(len(delay_names)/5)+1):
+			line = '\t' + ','.join(delay_names[i*5:(i+1)*5]) + ','
+			out.append(line)
+
+
+		delay_names = []
+		if len(self._primary_delay_list):
+			out.append('\n\t/* user set delays */')
+			for delay in self._primary_delay_list:
+				d = delay.name
+				if d not in delay_names:
+					out.append('\t%s = getval("%s"),' % (d,d))
+					delay_names.append(d)
+
+		grad_names = []
+		if len(self._gradient_list):
+			out.append('\n\t/* gradients */')
+			for grad in self._gradient_list:
+				g = grad.name
+				#match regex ending with numbers
+				if match:
+					gt = '%st%d' % (prefix,index)
+					glvl = '%slvl%d' % (prefix,index)
+				else:
+					gt = g + 't'
+					glvl = g + 'lvl'
+				#save symbol names for later
+				if g not in grad_names:
+					#print declaration and initialization
+					#for gradient level and gradient duration time
+					grad_names.append(g)
+
+		out.append('\t;');
+		return out;
 
 	def print_varian(self):
 		"""Creates varian pulse sequence file based on the pulse
 		sequence object
 		"""
-		print self
-		print "not implemented"
+		text = []
+		text.append("#include <standard.h>\n");
+
+		#print phase tables
+		phases = self.get_phase_tables()
+
+		for ph in phases:
+			text.append('static int %s[%d]=%s;' % (ph.name,len(ph.table),carray(ph.table)))
+		if len(phases) > 0:
+			text.append('\n')
+
+		self._pulse_list = self.get_pulses() #vars is a data structure
+		self._gradient_list = self.get_gradients()
+
+		text.append("void pulsesequence(){");
+		#declare variables
+		text.extend(self._varian_declare_vars())
+		#read parameters from environment
+		#test.extend(self._varian_init_vars(pulses,delays,grads))
+
+		#set phase tables
+		text.extend(self._varian_init_phase_tables(phases))
+
+		#set frequency discrimination scheme
+
+		#start pulse sequence
+		text.append('status(A);');
+		text.append("}");
+
+		for line in text:
+			print line;
 	
 	def __str__(self):
 		lines = []
@@ -2636,10 +2727,9 @@ try:
 	#this will have to be cleaned out in the next version
 	#probably time() routine needs to be moved up into read()
 	#together with whatever it needs from _compile_init()
-	seq.draw()
-	#print seq._image.size
+	#seq.draw()
 	#compiled.check_safety();
-	#compiled.print_varian()
+	compiled.print_varian()
 	sys.exit(0)
 except ParsingError,value:
 	print value
