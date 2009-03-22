@@ -233,6 +233,11 @@ class N:
 			raise "internal error: initializing class N with unexpected value"
 	def get_type(self):
 		return 'num'
+	def get_primary_delay_list(self):
+		"""dummy function needed for recursive retrieval of 
+		primary delay lists from the expressions
+		"""
+		return []
 	def get_eqn_str(self):
 		return '%f' % self._val
 
@@ -273,6 +278,20 @@ class E:
 
 	def get_type(self):
 		return 'expression';
+
+	def get_primary_delay_list(self):
+		"""return list of primary delay components of
+		the expression
+		"""
+		list = []
+		names = []
+		for arg in self._operands:
+			newlist = arg.get_primary_delay_list()
+			for item in newlist:
+				if item.name not in names:
+					list.append(item)
+					names.append(item.name) #would be less code with better POM
+		return list
 
 	def get_eqn_str(self):
 		op = self._operator
@@ -717,6 +736,13 @@ class PulseSequenceElement:
 	def set_ycoor(self,ycoor):#PulseSequenceElement.set_ycoor()
 		self.ycoor = ycoor
 
+	def get_primary_delay_list(self):
+		"""dummy function that returns empty list
+		only delays should return primary delay components from
+		their expressions
+		"""
+		return []
+
 	def time(self): # PulseSequenceElement.time()
 		"""calculate pre_span and post_span expressions
 
@@ -943,6 +969,12 @@ class Delay(PulseSequenceElement):
 			expr = self.name
 		#used to print out formula, but so far it's empty anyway
 		return '%s label=%s formula=%s' % (self.name,self.label,expr)
+
+	def get_primary_delay_list(self):
+		if self.expr == None:
+			return [self]
+		else:
+			return self.expr.get_primary_delay_list()
 
 	def get_eqn_str(self):
 		#if delay expression evaluates to None, then this delay is primary parameter
@@ -2496,7 +2528,6 @@ class PulseSequence:
 					#before compile()
 		self._compile_src = src
 		self._compile_cdelay_id = 0 #index for the next delay created by compiler
-		self._primary_delay_list = src._delay_list
 
 		#bootstrap wide events to start and end_anchors
 		#this code probably must be moved upstream or handling of 
@@ -2514,6 +2545,8 @@ class PulseSequence:
 		#probably this entire _compile_init() function
 		#needs to go inside read()
 		src.time() #time calculates timings, drawing offsets, generates draft label images
+		self._primary_delay_list = src._delay_list
+		self._hardware_delay_list = []
 					
 	def _compile_add_anchor_group(self,anchor):
 		ng = AnchorGroup()
@@ -2522,6 +2555,26 @@ class PulseSequence:
 		ng.timing_anchor = anchor
 		ng.timed_anchor = anchor
 		return ng
+
+	def _compile_build_hardware_delay_list(self):
+		#this list is started in the _compile_init
+		#by simply copying user-supplied delays
+		#here there is some cheating
+		#pull out all primary delays from expressions
+		#find those that were not supplied by the user
+		#and add them to the _hardware_delay_list
+		primary_delay_names = []
+		for d in self._primary_delay_list:
+			primary_delay_names.append(d.name)  #could be shorter with better POM
+			
+			
+		hardware_delay_names = []
+		for d in self._delay_list:
+			list = d.get_primary_delay_list()
+			for pd in list:
+				if pd.name not in primary_delay_names:
+					if pd.name not in hardware_delay_names:
+						self._hardware_delay_list.append(pd)
 
 	def compile(self,src):
 		"""Compile user-entered pulse sequence object src into a new one (self)
@@ -2585,6 +2638,9 @@ class PulseSequence:
 		#reassign channels where necessary 
 		#insert frequency switch anchors
 		#have to do this in the middle of official delays
+		self._compile_build_hardware_delay_list() #pull out all the "hardware" delays
+		self._pulse_list = self.get_pulses() #vars is a data structure
+		self._gradient_list = self.get_gradients()
 
 	def _varian_init_phase_tables(self,phases):
 		i = 1
@@ -2597,7 +2653,25 @@ class PulseSequence:
 			i = i+1
 		return output
 
+	def _varian_translate_name(self,name):
+		"""name translations
+		"""
+		varian_names = {'pfg_recovery_delay':'gstab','rf_pulse_gating_delay':'rof'}
+		if varian_names.has_key(name):
+			return varian_names[name]
+		else:
+			return name
+
+	def _varian_environment_names(self):
+		"""list of varian environment variables
+		"""
+		#list to be continued
+		return ['rof','sw','sw1','sw2','phase','phase2','ni','ni2','ct']
+
 	def _varian_declare_vars(self):
+		"""return list of lines containing variable declaration and initiatization
+		setion in the varian .c format
+		"""
 		if len(self._pulse_list) + len(self._delay_list) + len(self._gradient_list) == 0:
 			return
 
@@ -2651,22 +2725,37 @@ class PulseSequence:
 				if d not in delay_names:
 					out.append('\t%s = getval("%s"),' % (d,d))
 					delay_names.append(d)
+		delay_names = []
+		if len(self._hardware_delay_list):
+			out.append('\n\t/* hardware-specific delays */')
+			for delay in self._hardware_delay_list:
+				d = self._varian_translate_name(delay.name)
+				delay.varian_delay_name = d #varian_delay_name
+				if d not in self._varian_environment_names() and d not in delay_names:
+					out.append('\t%s = getval("%s"),' % (d,d))
+					delay_names.append(d)
 
 		grad_names = []
 		if len(self._gradient_list):
 			out.append('\n\t/* gradients */')
 			for grad in self._gradient_list:
 				g = grad.name
+				gre = re.compile(r'^(.*)(\d+)$')
+				m = gre.match(g)
 				#match regex ending with numbers
-				if match:
-					gt = '%st%d' % (prefix,index)
-					glvl = '%slvl%d' % (prefix,index)
+				if m:
+					prefix = m.group(1)
+					index = m.group(2)
+					gt = '%st%s' % (prefix,index)
+					glvl = '%s%slvl%s' % (prefix,grad.channel,index)
 				else:
 					gt = g + 't'
-					glvl = g + 'lvl'
+					glvl = g + grad.channel + 'lvl'
 				#save symbol names for later
 				if g not in grad_names:
 					#print declaration and initialization
+					out.append('\t%s = getval("%s"),' % (gt,gt))
+					out.append('\t%s = getval("%s"),' % (glvl,glvl))
 					#for gradient level and gradient duration time
 					grad_names.append(g)
 
@@ -2685,11 +2774,9 @@ class PulseSequence:
 
 		for ph in phases:
 			text.append('static int %s[%d]=%s;' % (ph.name,len(ph.table),carray(ph.table)))
+
 		if len(phases) > 0:
 			text.append('\n')
-
-		self._pulse_list = self.get_pulses() #vars is a data structure
-		self._gradient_list = self.get_gradients()
 
 		text.append("void pulsesequence(){");
 		#declare variables
@@ -2703,6 +2790,7 @@ class PulseSequence:
 		#set frequency discrimination scheme
 
 		#start pulse sequence
+
 		text.append('status(A);');
 		text.append("}");
 
