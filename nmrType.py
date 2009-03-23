@@ -183,6 +183,13 @@ class ParsingError:
 	def __str__(self):
 		print 'parsing error - ' , self.text
 
+class CompilationError:
+	text =  None
+	def __init__(self,text):
+		self.text = blanks_re.sub(' ',text)
+	def __str__(self):
+		print 'compilation error - ' , self.text
+
 class ChannelCodeParsingError:
 	channel_name = None
 	channel_text = None
@@ -233,13 +240,38 @@ class N:
 			raise "internal error: initializing class N with unexpected value"
 	def get_type(self):
 		return 'num'
+
+	def get_op(self):
+		return None
+
+	def get_val(self):
+		return self._val
+
 	def get_primary_delay_list(self):
 		"""dummy function needed for recursive retrieval of 
 		primary delay lists from the expressions
 		"""
 		return []
 	def get_eqn_str(self):
-		return '%f' % self._val
+		num = '%.15f' % self._val
+		num_re = re.compile(r'\.?0*$')
+		return num_re.sub('',num)
+
+	def reduce(self):
+		pass
+
+	def get_varian_expression(self):
+		return self.get_eqn_str()
+
+	def is_zero(self):
+		if self._val == 0:
+			return True
+		return False
+	
+	def is_one(self):
+		if self._val == 1:
+			return True
+		return False
 
 class E:
 	"""delay expression class
@@ -273,6 +305,11 @@ class E:
 		self._operator = type
 		self._operands = list(arg)
 
+	def get_op(self):
+		"""get operation type
+		"""
+		return self._operator
+
 	def get_operands(self):
 		return self._operands
 
@@ -305,6 +342,26 @@ class E:
 		elif op == 'mul':
 			return '*'.join(tokens)
 		elif op == 'sub':
+			return '(' + tokens[0] + '-(' + tokens[1] + '))'
+		elif op == 'set':
+			return tokens[0]
+		elif op == 'div':
+			return '(' + tokens[0] + ')/(' + tokens[1] + ')'
+		else:
+			raise 'internal error: unknown operator %s' % op
+
+	def get_varian_expression(self):
+		op = self._operator
+		tokens = []
+		for arg in self._operands:
+			tokens.append(arg.get_varian_expression())
+		if op == 'max':
+			return 'max(' + ','.join(tokens) + ')'
+		elif op == 'add':
+			return '+'.join(tokens)
+		elif op == 'mul':
+			return '*'.join(tokens)
+		elif op == 'sub':
 			return tokens[0] + '-(' + tokens[1] + ')'
 		elif op == 'set':
 			return tokens[0]
@@ -312,7 +369,77 @@ class E:
 			return '(' + tokens[0] + ')/(' + tokens[1] + ')'
 		else:
 			raise 'internal error: unknown operator %s' % op
-		
+
+	def get_operand(self,index):
+		return self._operands[index]
+
+	def reduce(self):
+		op = self._operator
+		#reduce operands
+		for arg in self._operands:
+			arg.reduce()
+
+		#flatten 'set'
+		flat = []
+		for arg in self._operands:
+			if arg.get_op() == 'set':
+				flat.append(arg.get_operand(0))
+			else:
+				flat.append(arg)
+		self._operands = flat
+
+		#get rid of zeroes and ones in mul
+		if (op == 'div'):
+			op1 = self._operands[0]
+			op2 = self._operands[1]
+			if op1.is_zero():
+				self.set_zero()
+			if op2.is_zero():
+				raise CompilationError('division by zero')
+			elif op2.is_one():
+				self.set(op1)
+		elif (op == 'mul'):
+			#collect and multiply numbers
+
+			#get rid of ones
+			
+			#check for multiplication by zero
+			for op in self._operands:
+				if op.is_zero():
+					self.set_zero()
+		elif (op == 'add'):
+			#get rid of zeroes
+			nozeroes = []
+			for arg in self._operands:
+				if not arg.is_zero():
+					nozeroes.append(arg)
+			self._operands = nozeroes
+			#collect and add numbers
+
+			#if all numbers set to number
+		elif (op == 'sub'):
+			if self.get_operand(1).is_zero():
+				self.set(self.get_operand(0))
+
+		if op in ['mul','add','max'] and len(self._operands) == 1:
+			self.set(self._operands[0])
+
+	def set(self,op):
+		self._operator = 'set'
+		self._operands = [op]
+
+	def set_zero(self):
+		self.set(N(0))
+
+	def is_zero(self):
+		if self.get_type() == 'num' and self.get_val() == 0:
+			return True
+		return False
+
+	def is_one(self):
+		if self.get_type() == 'num' and self.get_val() == 1:
+			return True
+		return False
 
 class Anchor:
 	def __init__(self,name):
@@ -693,14 +820,14 @@ class Channel:
 #then before pulse sequence is drawn information from template can be copied 
 #to the instances as a temporary plug
 #or maybe not so temporary ...
-class PulseSequenceElementTemplate:
+class PulseSequenceElementTemplate: #todo upgrade this class must become more influential
 	def __init__(self,type,name):
 		self._type = type #must match corresponding PulseSequenceElement._type
 		self.name = name
 		if type == 'pfg' or type == 'pfg_wide':
 			self.strength=100
 
-class PulseSequenceElement:
+class PulseSequenceElement(E): #this is weird - element inherits from expression type
 	"""base class for pulse sequence elements: delays, phases, pulses, etc
 
 	instant events have reference to carrying anchor (except phases)
@@ -728,6 +855,9 @@ class PulseSequenceElement:
 	def __str__(self):
 		return self._type
 
+	def get_op(self): #PulseSequenceElement.get_op() plug
+		return None
+
 	def get_maxh(self):
 		"""get channel drawing height
 		"""
@@ -742,6 +872,20 @@ class PulseSequenceElement:
 		their expressions
 		"""
 		return []
+
+	def get_varian_expression(self):
+		if self.expr == None:
+			if self.get_type() in ['rf_pulse','delay'] and self.__dict__.has_key('varian_name'):
+				return self.varian_name
+			elif self.get_type() == 'pfg' and self.__dict__.has_key('varian_grad_span'):
+				return self.varian_grad_span
+			else:
+				return self.name
+		else:
+			return self.expr.get_varian_expression()
+
+	def reduce(self):
+		pass
 
 	def time(self): # PulseSequenceElement.time()
 		"""calculate pre_span and post_span expressions
@@ -948,6 +1092,7 @@ class Delay(PulseSequenceElement):
 	def __init__(self,name,expr=None):
 		PulseSequenceElement.__init__(self)
 		self._type = 'delay'
+		self.type = 'delay' #todo remove plug in better POM
 		self.length = None    #length of delay in seconds
 		self.name = name
 		self.label = None
@@ -983,6 +1128,14 @@ class Delay(PulseSequenceElement):
 			return PulseSequenceElement.get_eqn_str(self)
 		else:
 			return self.expr.get_eqn_str()
+
+	def get_varian_code(self):
+		expr = self.get_varian_expression()
+		try:
+			if float(expr) == 0:
+				return []
+		except:
+			return ['\tdelay(%s);' % expr]
 
 	def set_xcoor(self,xcoor): #Delay.set_xcoor()
 		"""set x coordinate of delay
@@ -1061,6 +1214,7 @@ class WideEventToggle(PulseSequenceElement):
 			raise 'internal error: unknown type %s of WideEventToggle' % type
 		self.type = type
 		self.event = event
+		self.expr = N(0)  #todo remove this plug
 
 	def get_eqn_str(self):
 		return self.event.get_eqn_str()
@@ -1524,7 +1678,7 @@ class PulseSequence:
 			try:
 				ch = self.get_pfg_channel(name)
 			except:
-				raise ParsingError("channel %s no found in rf & pfg channel lists" % name)
+				raise ParsingError("channel %s not found in rf & pfg channel lists" % name)
 		return ch
 
 	def get_channel_list(self):
@@ -2106,7 +2260,9 @@ class PulseSequence:
 						'table':'int-list'})
 		self._attach_phases_to_pulses()
 
-		self._parse_variables('rfchan',{'label':'str','hardware':'int'})
+		self._parse_variables('rfchan',{'label':'str',
+						'nucleus':{'type':'str','values':['C','N','H','P','F']}
+						})
 		self._parse_variables('pfgchan',{'label':'str'})
 
 		self._parse_decorations()#decorations are contained in DecorLineList object
@@ -2434,7 +2590,7 @@ class PulseSequence:
 		pre_dly - delay preceding to group g 
 		"""
 		pre_e = pre_dly.expr
-		post_e = E('set',N(0))
+		post_e = N(0)
 
 		calc_post_dly = False
 		update_pre_dly = True
@@ -2547,6 +2703,8 @@ class PulseSequence:
 		src.time() #time calculates timings, drawing offsets, generates draft label images
 		self._primary_delay_list = src._delay_list
 		self._hardware_delay_list = []
+		self._rf_channel_table = src._rf_channel_table
+		self._pfg_channel_table = src._pfg_channel_table
 					
 	def _compile_add_anchor_group(self,anchor):
 		ng = AnchorGroup()
@@ -2576,6 +2734,14 @@ class PulseSequence:
 					if pd.name not in hardware_delay_names:
 						self._hardware_delay_list.append(pd)
 
+	def _reduce_delay_expressions(self):
+		print 'reducing delay expressions'
+		for d in self._delay_list:
+			if d.expr != None:
+				print 'before: ', d.expr.get_eqn_str()
+				d.expr.reduce()
+				print 'after: ', d.expr.get_eqn_str()
+
 	def compile(self,src):
 		"""Compile user-entered pulse sequence object src into a new one (self)
 		that can be converted into the instrument-specific code.
@@ -2589,9 +2755,8 @@ class PulseSequence:
 		src - source pulse sequence object
 		self - compiled pulse sequence object
 		"""
-		self._compile_init(src)
+		self._compile_init(src) #this calls time on source sequence
 		src = self._compile_src
-
 
 		groups = iter(src.get_anchor_groups())
 		pg = groups.next() #dummy start anchor group
@@ -2641,6 +2806,7 @@ class PulseSequence:
 		self._compile_build_hardware_delay_list() #pull out all the "hardware" delays
 		self._pulse_list = self.get_pulses() #vars is a data structure
 		self._gradient_list = self.get_gradients()
+		#self._reduce_delay_expressions() #this call needs serious work
 
 	def _varian_init_phase_tables(self,phases):
 		i = 1
@@ -2656,7 +2822,7 @@ class PulseSequence:
 	def _varian_translate_name(self,name):
 		"""name translations
 		"""
-		varian_names = {'pfg_recovery_delay':'gstab','rf_pulse_gating_delay':'rof'}
+		varian_names = {'pfg_recovery_delay':'gstab','rf_pulse_gating_delay':'rof',}
 		if varian_names.has_key(name):
 			return varian_names[name]
 		else:
@@ -2691,35 +2857,37 @@ class PulseSequence:
 			elif pulse.type != '90':
 				p_basename = pulse.name
 
-			p = '%s%s' % (pulse.channel,p_basename)
+			#todo this may be packed into a function - pulse name calculations
+			channel = self.get_channel(pulse.channel)
+			p = '%s%s' % (channel.nucleus,p_basename)
 
-			p_pwr = 'power_%s' % p
-			p_name = 'pw_%s' % p
+			p_pwr = '%spwr' % p
+			p_name = 'pw%s' % p
 
 			pulse.varian_power_level = p_pwr  #varian_power_level
-			pulse.varian_pulse_name = p_name  #varian_pulse_name
+			pulse.varian_name = p_name  #varian_name
 
 			if p not in printed_pulses: #here goes the workaround
 				out.append('\t%s = getval("%s"),' % (p_name,p_name))
 				out.append('\t%s = getval("%s"),\n' % (p_pwr,p_pwr))
 				printed_pulses.append(p)
 
-		delay_names = []
-		if len(self._delay_list):
-			out.append('\t/* calculated delays */')
-			for delay in self._delay_list:
-				d = delay.name
-				if d not in delay_names and delay.expr != None:
-					delay_names.append(d)
+		#delay_names = []
+		#if len(self._delay_list):
+		#	out.append('\t/* calculated delays */')
+		#	for delay in self._delay_list:
+		#		d = delay.name
+		#		if d not in delay_names and delay.expr != None:
+		#			delay_names.append(d)
 
-		for i in range(0,int(len(delay_names)/5)+1):
-			line = '\t' + ','.join(delay_names[i*5:(i+1)*5]) + ','
-			out.append(line)
+		#for i in range(0,int(len(delay_names)/5)+1):
+		#	line = '\t' + ','.join(delay_names[i*5:(i+1)*5]) + ','
+		#	out.append(line)
 
 
 		delay_names = []
 		if len(self._primary_delay_list):
-			out.append('\n\t/* user set delays */')
+			out.append('\t/* user set delays */')
 			for delay in self._primary_delay_list:
 				d = delay.name
 				if d not in delay_names:
@@ -2730,7 +2898,7 @@ class PulseSequence:
 			out.append('\n\t/* hardware-specific delays */')
 			for delay in self._hardware_delay_list:
 				d = self._varian_translate_name(delay.name)
-				delay.varian_delay_name = d #varian_delay_name
+				delay.varian_name = d #varian_name
 				if d not in self._varian_environment_names() and d not in delay_names:
 					out.append('\t%s = getval("%s"),' % (d,d))
 					delay_names.append(d)
@@ -2752,6 +2920,8 @@ class PulseSequence:
 					gt = g + 't'
 					glvl = g + grad.channel + 'lvl'
 				#save symbol names for later
+				grad.varian_grad_level = glvl   #varian_grad_level
+				grad.varian_grad_span = gt    #varian_grad_span
 				if g not in grad_names:
 					#print declaration and initialization
 					out.append('\t%s = getval("%s"),' % (gt,gt))
@@ -2761,6 +2931,80 @@ class PulseSequence:
 
 		out.append('\t;');
 		return out;
+
+	def _varian_build_freq_discrimination(self):
+		return []
+
+	def _varian_print_events(self,events):
+		if len(events) == 0:
+			return []
+		out = []
+		if (isinstance(events[0],GradPulse)):
+			if len(events) > 1:
+				raise CompilationError("simultaneous gradients for varian not supported yet")
+			else:
+				e = events[0]
+				out.append("\trgradient('%s',%s);" % (e.channel,e.varian_grad_level))
+				out.append('\tdelay(%s);' % e.varian_grad_span)
+				out.append("\trgradient('%s',0.0);" % e.channel)
+				out.append('\tdelay(%s);' % e.post_gating_delay.get_varian_expression())
+		elif (isinstance(events[0],Pulse)):
+			#todo major plug here I make assumption that
+			#H - channel 1
+			#C - channel 2
+			#N - channel 3
+			#other channels not supported!
+			nuclei = {}
+			types = {}
+			edges = {}
+			for e in events:
+				nuclei[self.get_channel(e.channel).nucleus] = 1
+				types[e.type] = 1
+				edges[e.edge] = 1
+			nlist = nuclei.keys()
+			tlist = types.keys()
+			elist = edges.keys()
+			if len(elist) > 1:
+				raise CompilationError('different pulse edge alignment on the same anchor not yet supported for varian')
+			elif elist[0] != 'center' and len(events) > 1:
+				raise CompilationError('simultaneous pulses for Varian can be only centered at this time')
+
+			if 'sh' in tlist:
+				#prepare shaped pulse
+				if len(nlist) > 1:
+					#simultaneous shaped pulse
+					pass
+				else:
+					#ordinary shaped pulse
+					pass
+			else:
+				#prepare rectangular pulse
+				if len(nlist) > 1:
+					#simultaneous rectangular pulse
+					pass
+				else:
+					#ordinary shaped pulse
+					pass
+		return out
+
+	def _varian_build_pulse_sequence_body(self):
+		status = 'ABCDEFGHIJKLMNOPQRST'
+
+		glist = iter(self._glist)
+		cg = glist.next()
+		cstat = 0
+		out = []
+		out.append('status(%s);' % status[cstat])
+		for g in glist:
+			delay = cg.post_delay
+			text = delay.get_varian_code()
+			out.extend(text)
+			anchor = g.anchor_list[0]
+			text = self._varian_print_events(anchor.events)
+			out.extend(text)
+			cg = g
+		return out
+			
 
 	def print_varian(self):
 		"""Creates varian pulse sequence file based on the pulse
@@ -2789,9 +3033,10 @@ class PulseSequence:
 
 		#set frequency discrimination scheme
 
-		#start pulse sequence
+		#set power levels
 
-		text.append('status(A);');
+		#start pulse sequence
+		text.extend(self._varian_build_pulse_sequence_body())
 		text.append("}");
 
 		for line in text:
@@ -2817,6 +3062,8 @@ try:
 	#together with whatever it needs from _compile_init()
 	#seq.draw()
 	#compiled.check_safety();
+	#print compiled
+	#sys.exit(0)
 	compiled.print_varian()
 	sys.exit(0)
 except ParsingError,value:
