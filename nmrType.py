@@ -238,7 +238,7 @@ class N:
 			self._val = float(value)
 		else:
 			raise "internal error: initializing class N with unexpected value"
-	def get_type(self):
+	def get_type(self):#N.get_type()
 		return 'num'
 
 	def get_op(self):
@@ -313,7 +313,7 @@ class E:
 	def get_operands(self):
 		return self._operands
 
-	def get_type(self):
+	def get_type(self): #E.get_type()
 		return 'expression';
 
 	def get_primary_delay_list(self):
@@ -350,23 +350,69 @@ class E:
 		else:
 			raise 'internal error: unknown operator %s' % op
 
+	def get_varian_max_expression(self,args):
+		if len(args) == 0:
+			return None 
+		elif len(args) == 1:
+			return args[0]
+		else:
+			first = args.pop(0)
+			rest = self.get_varian_max_expression(args)
+			return 'MAX(%s,%s)' % (first,rest)
+
 	def get_varian_expression(self):
 		op = self._operator
 		tokens = []
+		orig = self.get_eqn_str()
 		for arg in self._operands:
 			tokens.append(arg.get_varian_expression())
 		if op == 'max':
-			return 'max(' + ','.join(tokens) + ')'
+			tbl = {}
+			for t in tokens:
+				tbl[t] = 1
+			tokens = tbl.keys()
+			if len(tokens) == 0:
+				return '0'
+				raise CompilationError('max expression %s has no arguments' % self.get_eqn_str())
+			else:
+				text = self.get_varian_max_expression(tokens)
+				return text
 		elif op == 'add':
-			return '+'.join(tokens)
+			nonzero = []
+			for t in tokens:
+				try:
+					if float(t) != 0:
+						nonzero.append(t)
+				except:
+					nonzero.append(t)
+			if len(nonzero) > 0:
+				text = '+'.join(nonzero)
+				return text
+			else:
+				return '0'
 		elif op == 'mul':
-			return '*'.join(tokens)
+			text = '*'.join(tokens)
+			return text
 		elif op == 'sub':
-			return tokens[0] + '-(' + tokens[1] + ')'
+			try:
+				if float(tokens[1]) == 0:
+					text = tokens[0]
+			except:
+				try:
+					if float(tokens[0]) == 0:
+						text = '-(%s)' % tokens[1]
+				except:
+					text = tokens[0] + '-(' + tokens[1] + ')'
+			return text
 		elif op == 'set':
 			return tokens[0]
 		elif op == 'div':
-			return '(' + tokens[0] + ')/(' + tokens[1] + ')'
+			try:
+				if float(tokens[0]) == 0:
+					text = '0'
+			except:
+				text = '(' + tokens[0] + ')/(' + tokens[1] + ')'
+			return text
 		else:
 			raise 'internal error: unknown operator %s' % op
 
@@ -803,6 +849,7 @@ class Channel:
 		self.ycoor = None
 		self.template = None #todo remove this 
 		self.label = None #initialized by _parse_variables
+		self._compile_wide_event_status = 'off'
 	def prepare_label(self):
 		text = self.name
 		if self.label != None:
@@ -810,7 +857,16 @@ class Channel:
 		im = latex2image(text)
 		self.label_image = im
 		self.label_width = im.size[0]
-		
+
+	def wide_event_on(self):
+		if self._compile_wide_event_status == 'on':
+			raise CompilationError('new wide event on channel %s while previous one has not finished' % self.name)
+		self._compile_wide_event_status = 'on'
+
+	def wide_event_off(self):
+		if self._compile_wide_event_status == 'off':
+			raise CompilationError('wide event is already off %s when trying to turn it off again' % self.name)
+		self._compile_wide_event_status = 'off'
 
 #an object collecting information about pulse sequence elements
 #that is applied to several instances of the events
@@ -876,6 +932,8 @@ class PulseSequenceElement(E): #this is weird - element inherits from expression
 	def get_varian_expression(self):
 		if self.expr == None:
 			if self.get_type() in ['rf_pulse','delay'] and self.__dict__.has_key('varian_name'):
+				if self.get_type() == 'rf_pulse' and self.type == '180':
+					return self.varian_name + '*2' #todo remove temp plug
 				return self.varian_name
 			elif self.get_type() == 'pfg' and self.__dict__.has_key('varian_grad_span'):
 				return self.varian_grad_span
@@ -950,7 +1008,7 @@ class PulseSequenceElement(E): #this is weird - element inherits from expression
 				val = self.template.__dict__[key]
 				self.__dict__[key] = val
 
-	def get_type(self):
+	def get_type(self): #PulseSequenceElement.get_type()
 		return self._type
 
 	def is_pegged(self):
@@ -1092,7 +1150,7 @@ class Delay(PulseSequenceElement):
 	def __init__(self,name,expr=None):
 		PulseSequenceElement.__init__(self)
 		self._type = 'delay'
-		self.type = 'delay' #todo remove plug in better POM
+		self.type = 'general' #todo remove? plug in better POM
 		self.length = None    #length of delay in seconds
 		self.name = name
 		self.label = None
@@ -1228,6 +1286,9 @@ class WideEventToggle(PulseSequenceElement):
 		if self.type == 'on':
 			self.event.xcoor = self.xcoor
 
+	def get_type(self):#WideEventToggle.get_type()
+		return self.event.get_type()
+
 	def calc_drawing_dimensions(self):
 		if self.type == 'on':
 			self.event.calc_drawing_dimensions()
@@ -1235,6 +1296,15 @@ class WideEventToggle(PulseSequenceElement):
 	def draw(self,draw_obj): #WideEventToggle.draw()
 		if self.type == 'on':
 			self.event.draw(draw_obj)
+
+class VPulse:
+	"""Varian pulse data access object (DAO)
+	"""
+	def __init__(self,pw='0.0',ph='zero',gt1='rof1',gt2='rof2'):
+		self.pw = pw
+		self.ph = ph
+		self.gt1 = gt1
+		self.gt2 = gt2
 
 class Pulse(PulseSequenceElement):
 	"""class for RF pulse
@@ -1290,6 +1360,19 @@ class Pulse(PulseSequenceElement):
 		else:
 			self.drawing_height = maxh
 		PulseSequenceElement.calc_drawing_dimensions(self)
+
+	def get_varian_parameters(self):
+		pw = self.varian_name
+		if self.phase != None:
+			ph = self.phase.varian_name	
+		else:
+			ph = 'zero'
+		rof1 = self.pre_gating_delay.get_varian_expression()
+		rof2 = self.post_gating_delay.get_varian_expression()
+		vpulse = VPulse(pw=pw,ph=ph,gt1=rof1,gt2=rof2)
+		if self.type == '180':
+			vpulse.pw = vpulse.pw + '*2' #todo remove temp plug, should use expr p180=2*p
+		return vpulse
 
 	def draw(self,draw_obj):#Pulse.draw()
 		if self.type in ('90','180','lp','rect'):
@@ -2280,6 +2363,7 @@ class PulseSequence:
 			for d in delays:
 				if d.start_anchor == acq.anchor and d.end_anchor == acq.end_anchor:
 					d.template.hide = True
+					d.type = 'acq' #mark as acquisition delay
 
 
 	def _read_code(self):
@@ -2814,7 +2898,7 @@ class PulseSequence:
 		for ph in phases:
 			tname = 't%d' % i
 			text = '\tsettable(%s, %d, %s);' % (tname,len(ph.table),ph.name)
-			ph.varian_table_name = tname
+			ph.varian_name = tname
 			output.append(text)	
 			i = i+1
 		return output
@@ -2867,11 +2951,16 @@ class PulseSequence:
 			pulse.varian_power_level = p_pwr  #varian_power_level
 			pulse.varian_name = p_name  #varian_name
 
+			if pulse.type == '90':#todo remove plug
+				channel._varian_hard_pulse_power_variable = p_pwr
+
 			if p not in printed_pulses: #here goes the workaround
 				out.append('\t%s = getval("%s"),' % (p_name,p_name))
 				out.append('\t%s = getval("%s"),\n' % (p_pwr,p_pwr))
 				printed_pulses.append(p)
 
+		#might want to use these variables to check for negative delays
+		#for better error checking
 		#delay_names = []
 		#if len(self._delay_list):
 		#	out.append('\t/* calculated delays */')
@@ -2889,10 +2978,12 @@ class PulseSequence:
 		if len(self._primary_delay_list):
 			out.append('\t/* user set delays */')
 			for delay in self._primary_delay_list:
-				d = delay.name
-				if d not in delay_names:
-					out.append('\t%s = getval("%s"),' % (d,d))
-					delay_names.append(d)
+				if delay.type != 'acq': #remove temp plug breaks explicit acq
+					d = delay.name + '_dly' #this is to screen real-time t variables, etc
+					delay.varian_name = d
+					if d not in delay_names:
+						out.append('\t%s = getval("%s"),' % (d,delay.name))
+						delay_names.append(d)
 		delay_names = []
 		if len(self._hardware_delay_list):
 			out.append('\n\t/* hardware-specific delays */')
@@ -2939,7 +3030,7 @@ class PulseSequence:
 		if len(events) == 0:
 			return []
 		out = []
-		if (isinstance(events[0],GradPulse)):
+		if isinstance(events[0],GradPulse):
 			if len(events) > 1:
 				raise CompilationError("simultaneous gradients for varian not supported yet")
 			else:
@@ -2948,7 +3039,29 @@ class PulseSequence:
 				out.append('\tdelay(%s);' % e.varian_grad_span)
 				out.append("\trgradient('%s',0.0);" % e.channel)
 				out.append('\tdelay(%s);' % e.post_gating_delay.get_varian_expression())
-		elif (isinstance(events[0],Pulse)):
+		elif isinstance(events[0],WideEventToggle): #todo fix handling of wide events properly
+			#now nothing explicit is done - just switch of status and power
+			#in hopes that dm, dmf and dmm type variables can help
+			if len(events) > 1:
+				raise CompilationError('simultaneous wide event toggles not supported for varian')
+			toggle = events[0]
+			e = events[0].event
+			ch = self.get_channel(e.channel)
+			if toggle.type == 'on':
+				#set power  todo normally there must just be power switch event
+				out.append(self._varian_set_power_for_event(e)) #todo remove plug call
+				#like for pulses need to use table obspower, decpower, dec2power, etc
+				out.append(self._varian_next_status_statement());
+				ch.wide_event_on()
+			elif toggle.type == 'off':
+				out.append(self._varian_next_status_statement());
+				#restore power
+				out.append(self._varian_restore_default_power_after_event(e)) #another plug
+				ch.wide_event_off()
+			else:
+				raise 'internal error: unknown toggle type \'%s\'' % toggle.type
+
+		elif isinstance(events[0],Pulse):
 			#todo major plug here I make assumption that
 			#H - channel 1
 			#C - channel 2
@@ -2981,25 +3094,96 @@ class PulseSequence:
 				#prepare rectangular pulse
 				if len(nlist) > 1:
 					#simultaneous rectangular pulse
-					pass
+					call = ''
+					pars = []
+					for p in events:
+						pars.append(p.get_varian_parameters())
+
+					if len(nlist) == 2:
+						if 'N' in nlist:
+							call='sim3pulse'
+							dummy = VPulse()
+							if not 'H' in nlist:
+								pars.insert(0,dummy) #magic number
+							if not 'C' in nlist:
+								pars.insert(1,dummy) #magic number
+						else:
+							call='simpulse'
+					elif len(nlist) == 3:
+						call = 'sim3pulse'
+					else:
+						raise CompilationError('more then 3 simultaneous pulses for varian not supported yet')
+					text = '\t%s(' % call
+					for par in pars:
+						text = text + par.pw + ','
+					for par in pars:
+						text = text + par.ph + ','
+					text = '%s%s,%s);' % (text,pars[0].gt1,pars[0].gt2) #temporary plug
+					out.append(text)
 				else:
-					#ordinary shaped pulse
-					pass
+					#ordinary pulse
+					pulse_calls = {'H':'rgpulse','C':'decrgpulse','N':'dec2rgpulse'}
+					p = events[0]
+					call = pulse_calls[self.get_channel(p.channel).nucleus]
+					par = p.get_varian_parameters()
+					out.append('\t%s(%s,%s,%s,%s);' % (call,par.pw,par.ph,par.gt1,par.gt2))
 		return out
 
+	def _varian_set_power_for_event(self,event): #todo this needs to be seriously redone
+		#plug assumed tpwr,dpwr,dpwr2
+		nuc = self.get_channel(event.channel).nucleus
+		if nuc == 'H':
+			return 'obspower(tpwr);/* limitation: tpwr assumed for decoupling!!! */'
+		elif nuc == 'C':
+			return 'decpower(dpwr); /* limitation: dpwr assumed */'
+		elif nuc == 'N':
+			return 'dec2power(dpwr2); /* limitation: dpwr assumed */'
+		else:
+			raise 'internal error on H,C,N channels supported for varian so far'
+
+	def _varian_restore_default_power_after_event(self,event): #todo this needs to be seriously redone
+		ch = self.get_channel(event.channel)
+		nuc = ch.nucleus
+		lvl = ch._varian_hard_pulse_power_variable
+		if nuc == 'H':
+			return 'obspower(%s);' % lvl
+		elif nuc == 'C':
+			return 'decpower(%s);' % lvl
+		elif nuc == 'N':
+			return 'dec2power(%s);' % lvl
+		else:
+			raise 'internal error on H,C,N channels supported for varian so far'
+
+	def _varian_next_status_statement(self):
+		status = self._varian_status_table
+		cstat = self._varian_cstatus
+		self._varian_cstatus = cstat + 1
+		return 'status(%s);' % status[cstat]
+
 	def _varian_build_pulse_sequence_body(self):
-		status = 'ABCDEFGHIJKLMNOPQRST'
+		self._varian_status_table = 'ABCDEFGHIJKLMNOPQRST'
+		self._varian_cstatus = 0
 
 		glist = iter(self._glist)
 		cg = glist.next()
-		cstat = 0
 		out = []
-		out.append('status(%s);' % status[cstat])
+		out.append(self._varian_next_status_statement())
 		for g in glist:
 			delay = cg.post_delay
 			text = delay.get_varian_code()
 			out.extend(text)
 			anchor = g.anchor_list[0]
+			#todo remove temporary plug explicit acqs will break
+			if len(anchor.events) > 0 and anchor.events[0].get_type() == 'acq':
+				out.append('\trcvron();')
+				out.append(self._varian_next_status_statement())
+				acq = anchor.events[0].event #get acq event out of toggle event
+				if acq.phase != None:
+					phase = acq.phase.varian_name
+				else:
+					phase = 'zero'
+				out.append('\tsetreceiver(%s);' % phase)
+				break
 			text = self._varian_print_events(anchor.events)
 			out.extend(text)
 			cg = g
@@ -3060,7 +3244,7 @@ try:
 	#this will have to be cleaned out in the next version
 	#probably time() routine needs to be moved up into read()
 	#together with whatever it needs from _compile_init()
-	#seq.draw()
+	seq.draw()
 	#compiled.check_safety();
 	#print compiled
 	#sys.exit(0)
