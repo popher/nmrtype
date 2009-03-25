@@ -858,6 +858,12 @@ class Channel:
 		self.label_image = im
 		self.label_width = im.size[0]
 
+	def is_wide_event_on(self):#Channel.is_wide_event_on()
+		if self._compile_wide_event_status == 'on':
+			return True
+		else:
+			return False
+
 	def wide_event_on(self):
 		if self._compile_wide_event_status == 'on':
 			raise CompilationError('new wide event on channel %s while previous one has not finished' % self.name)
@@ -1763,6 +1769,12 @@ class PulseSequence:
 			except:
 				raise ParsingError("channel %s not found in rf & pfg channel lists" % name)
 		return ch
+
+	def is_wide_event_on(self):
+		for ch in self._rf_channel_table.values() + self._pfg_channel_table.values():
+			if ch.is_wide_event_on():
+				return True
+		return False
 
 	def get_channel_list(self):
 		"""return unordred list of names of all channels
@@ -3137,7 +3149,7 @@ class PulseSequence:
 		elif nuc == 'C':
 			return 'decpower(dpwr); /* limitation: dpwr assumed */'
 		elif nuc == 'N':
-			return 'dec2power(dpwr2); /* limitation: dpwr assumed */'
+			return 'dec2power(dpwr2); /* limitation: dpwr2 assumed */'
 		else:
 			raise 'internal error on H,C,N channels supported for varian so far'
 
@@ -3176,7 +3188,8 @@ class PulseSequence:
 			#todo remove temporary plug explicit acqs will break
 			if len(anchor.events) > 0 and anchor.events[0].get_type() == 'acq':
 				out.append('\trcvron();')
-				out.append(self._varian_next_status_statement())
+				if not self.is_wide_event_on():
+					out.append(self._varian_next_status_statement())
 				acq = anchor.events[0].event #get acq event out of toggle event
 				if acq.phase != None:
 					phase = acq.phase.varian_name
