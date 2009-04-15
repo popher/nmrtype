@@ -847,6 +847,7 @@ class Channel:
 		self.height_above = None
 		self.neight_below = None
 		self.ycoor = None
+		self.power = None
 		self.template = None #todo remove this 
 		self.label = None #initialized by _parse_variables
 		self._compile_wide_event_status = 'off'
@@ -1316,13 +1317,12 @@ class WideEventToggle(PulseSequenceElement):
 class VPulse:
 	"""Varian pulse class
 	"""
-	def __init__(self,pw='0.0',ph='zero',gt1='rof1',gt2='rof2',channel=1,power='high'):
+	def __init__(self,pw='0.0',ph='zero',gt1='rof1',gt2='rof2',channel=1):
 		self.pw = pw
 		self.ph = ph
 		self.gt1 = gt1
 		self.gt2 = gt2
 		self.channel = channel  #hardware channel 1,2,3,4,...
-		self.power = power
 	def render(self):
 		if self.channel == 1:
 			call = 'rgpulse'
@@ -1449,14 +1449,17 @@ class Pulse(PulseSequenceElement):
 		#todo remove temporary plug
 		#power for pulses muset be more global parameter, like phase
 		#now power is either 'high', or 'set' - bespoke for each pulse
-		power = 'set'
-		if self.type in ['180','90']:
-			power = 'high'
 
-		vpulse = VPulse(pw=pw,ph=ph,gt1=rof1,gt2=rof2,channel=ch,power=power)
+		vpulse = VPulse(pw=pw,ph=ph,gt1=rof1,gt2=rof2,channel=ch)
 		if self.type == '180':
 			vpulse.pw = vpulse.pw + '*2' #todo remove temp plug, should use expr p180=2*p
 		return vpulse
+
+	def get_power_level(self):
+		power = 'set'
+		if self.type in ['180','90']:
+			power = 'high'
+		return power
 
 	def draw(self,draw_obj):#Pulse.draw()
 		if self.type in ('90','180','lp','rect'):
@@ -1752,6 +1755,9 @@ class PulseSequence:
 				if e.phase != None:
 					phases.append(e.phase)
 		return phases
+
+	def get_wide_rf_pulses(self):
+		return self.get_elements('rf_wide_pulse')
 
 	def get_pulses(self):
 		return self.get_elements('rf_pulse')
@@ -2986,6 +2992,7 @@ class PulseSequence:
 		#have to do this in the middle of official delays
 		self._compile_build_hardware_delay_list() #pull out all the "hardware" delays
 		self._pulse_list = self.get_pulses() #vars is a data structure
+		self._wide_rf_pulse_list = self.get_wide_rf_pulses()
 		self._gradient_list = self.get_gradients()
 		#self._reduce_delay_expressions() #this call needs serious work
 
@@ -3023,17 +3030,39 @@ class PulseSequence:
 		the last element gets semicolon ;
 		resulting list can be printed out as a valid c statement
 		"""
+		if len(list) == 0:
+			return
 		for i in range(len(list)-1):
 			list[i] = list[i] + ','
 		list[-1] = list[-1] + ';'
+
+	def _varian_get_pulse_base_name(self,pulse):
+		p_basename = pulse.type
+
+		if pulse.type == '180':  #define parameters for the 90 instead
+			p_basename = '90'
+		elif pulse.type != '90':
+			p_basename = pulse.name
+
+		#todo this may be packed into a function - pulse name calculations
+		channel = self.get_channel(pulse.channel)
+		return '%s%s' % (channel.nucleus,p_basename)
+
+	def _varian_get_rf_event_power(self,pulse):
+		p = self._varian_get_pulse_base_name(pulse)
+		return '%spwr' % p
+
+	def _varian_get_pulse_name(self,pulse):
+		p = self._varian_get_pulse_base_name(pulse)
+		return 'pw%s' % p
 
 	def _varian_declare_vars(self):
 		"""return list of lines containing variable declaration and initiatization
 		setion in the varian .c format
 		"""
-		if len(self._pulse_list) + len(self._delay_list) + len(self._gradient_list) == 0:
+		if len(self._pulse_list) + len(self._delay_list) \
+			+ len(self._gradient_list) + len(self._wide_rf_pulse_list) == 0:
 			return
-
 
 		var_text = []
 
@@ -3041,23 +3070,14 @@ class PulseSequence:
 		printed_pulses = []
 		for pulse in self._pulse_list: 
 
-			p_basename = pulse.type
-
-			if pulse.type == '180':  #define parameters for the 90 instead
-				p_basename = '90'
-			elif pulse.type != '90':
-				p_basename = pulse.name
-
-			#todo this may be packed into a function - pulse name calculations
-			channel = self.get_channel(pulse.channel)
-			p = '%s%s' % (channel.nucleus,p_basename)
-
-			p_pwr = '%spwr' % p
-			p_name = 'pw%s' % p
+			p_pwr = self._varian_get_rf_event_power(pulse)
+			p_name = self._varian_get_pulse_name(pulse)
+			p = self._varian_get_pulse_base_name(pulse)
 
 			pulse.varian_power_level = p_pwr  #varian_power_level
 			pulse.varian_name = p_name  #varian_name
 
+			channel = self.get_channel(pulse.channel)
 			if pulse.type == '90':#todo remove plug
 				channel._varian_hard_pulse_power_variable = p_pwr
 
@@ -3069,7 +3089,20 @@ class PulseSequence:
 		self._c_punctuate_var_list(var_text)
 
 		if len(var_text):
-			out = ['double  /* declare pulses */']
+			out = ['\ndouble  /* declare pulses */']
+			out.extend(var_text)
+
+		printed_wides = []
+		var_text = []
+		for wp in self._wide_rf_pulse_list:
+			p_pwr = self._varian_get_rf_event_power(wp)
+			wp.varian_power_level = p_pwr
+			if p_pwr not in printed_pulses:
+				var_text.append('\t%s = getval("%s")' % (p_pwr,p_pwr))
+				printed_wides.append(p_pwr)
+		self._c_punctuate_var_list(var_text)
+		if len(var_text):
+			out.append('\ndouble /* decoupling power */')
 			out.extend(var_text)
 
 		#might want to use these variables to check for negative delays
@@ -3100,7 +3133,7 @@ class PulseSequence:
 
 		self._c_punctuate_var_list(var_text)
 		if len(var_text):
-			out.append('double /* user set delays */')
+			out.append('\ndouble /* user set delays */')
 			out.extend(var_text)
 
 		delay_names = []
@@ -3115,7 +3148,7 @@ class PulseSequence:
 
 		self._c_punctuate_var_list(var_text)
 		if len(var_text):
-			out.append('double /* hardware specific delays */')
+			out.append('\ndouble /* hardware specific delays */')
 			out.extend(var_text)
 
 		grad_names = []
@@ -3146,7 +3179,7 @@ class PulseSequence:
 
 		self._c_punctuate_var_list(var_text)
 		if len(var_text):
-			out.append('double /* gradients */')
+			out.append('\ndouble /* gradients */')
 			out.extend(var_text)
 
 		return out;
@@ -3177,14 +3210,14 @@ class PulseSequence:
 			ch = self.get_channel(e.channel)
 			if toggle.type == 'on':
 				#set power  todo normally there must just be power switch event
-				out.append(self._varian_adjust_power_for_events_if_needed([e])) #todo remove plug call
+				out.extend(self._varian_adjust_power_for_events_if_needed([e])) #todo remove plug call
 				#like for pulses need to use table obspower, decpower, dec2power, etc
 				out.append(self._varian_next_status_statement());
 				ch.wide_event_on()
 			elif toggle.type == 'off':
 				out.append(self._varian_next_status_statement());
-				#restore power
-				out.append(self._varian_restore_default_power_after_event(e)) #another plug
+				#restore power (removed this, decided to switch power just before events
+				#out.append(self._varian_restore_default_power_after_event(e)) #another plug
 				ch.wide_event_off()
 			else:
 				raise 'internal error: unknown toggle type \'%s\'' % toggle.type
@@ -3233,30 +3266,41 @@ class PulseSequence:
 					for p in events:
 						vsp.add_event(p)
 
+					pwr_set = self._varian_adjust_power_for_events_if_needed(events)
+					out.extend(pwr_set)
 					text = vsp.render()
 					out.append(text)
 				else:
 					p = events[0]
-					text = self._varian_set_power_if_needed([p])
-					if text != Null:
-						out.append(text)
+					pwr_set = self._varian_adjust_power_for_events_if_needed([p])
+					out.extend(pwr_set)
 					vp = p.get_varian_parameters()
 					out.append(vp.render())
 		return out
 
-	def _varian_set_power_for_event(self,event): #todo this needs to be seriously redone
+	def _varian_adjust_power_for_events_if_needed(self,events): #todo this needs to be seriously redone
 		#plug assumed tpwr,dpwr,dpwr2
-		nuc = self.get_channel(event.channel).nucleus
-		if nuc == 'H':
-			return 'obspower(tpwr);/* limitation: tpwr assumed for decoupling!!! */'
-		elif nuc == 'C':
-			return 'decpower(dpwr); /* limitation: dpwr assumed */'
-		elif nuc == 'N':
-			return 'dec2power(dpwr2); /* limitation: dpwr2 assumed */'
-		else:
-			raise 'internal error on H,C,N channels supported for varian so far'
+		#power switching delay is ignored
+		#three state power level management is used: 'high' (NUC90pwr),'set' (per pulse bespoke),'dec' (decoupling)
+		call = self._varian_get_power_call_table()
+
+		out = []
+
+		for e in events:
+			ch = self.get_channel(e.channel)
+			hardware = ch.hardware
+			cpower = ch.power
+			epower = e.varian_power_level
+
+			if epower != cpower:
+				#print power change statement
+				out.append('%s(%s)' % (call[hardware],epower))
+				#remember new setting
+				ch.power = epower
+		return out
 
 	def _varian_restore_default_power_after_event(self,event): #todo this needs to be seriously redone
+		#this routine is probably not used now - check it!
 		ch = self.get_channel(event.channel)
 		nuc = ch.nucleus
 		#todo remove plug
@@ -3278,16 +3322,28 @@ class PulseSequence:
 		cstat = self._varian_cstatus
 		self._varian_cstatus = cstat + 1
 		return 'status(%s);' % status[cstat]
+	
+	#try to clump together varian magic names
+	def _varian_get_power_call_table(self):
+		return {1:'obspower',2:'decpower',3:'dec2power'}
+
+	def _varian_get_default_channel_power(self,ch=1):
+		table = ['tpwr','dpwr','dpwr2']
+		if ch > 3:
+			raise CompilationError('channels above 3 not yet supported for Varian')
+		return table[ch-1]
 
 	def _varian_set_hard_pulse_power_levels(self):
 		out = []
 		channels = self.get_rf_channels()
 		channels.sort(lambda x,y: x.hardware - y.hardware)
 
-		call = {1:'obspower',2:'decpower',3:'dec2power'}
+		call = self._varian_get_power_call_table()
 
 		for ch in channels:
-			text = '\t%s(%s90pwr);' % (call[ch.hardware],ch.nucleus)
+			lvl = '%s90pwr' % ch.nucleus
+			text = '\t%s(%s90pwr);' % (call[ch.hardware],lvl)
+			ch.power = lvl#remember new setting a state
 			out.append(text)
 		return out
 
@@ -3326,7 +3382,6 @@ class PulseSequence:
 			out.extend(text)
 			cg = g
 		return out
-			
 
 	def print_varian(self):
 		"""Creates varian pulse sequence file based on the pulse
