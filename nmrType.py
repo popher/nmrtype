@@ -1147,6 +1147,16 @@ class Phase(PulseSequenceElement):
 		self.name = name
 		self.label = None
 		self.table = None
+
+	def fix_table_into_array(self): #todo remove temp plug
+		if self.table != None:
+			if type(self.table) == type([]):
+				pass
+			elif type(self.table) == type(1):
+				self.table = [self.table]
+			else:
+				raise 'internal error unsupported type of phase table'
+
 	def __str__(self):
 		str = self.name + ' ' + self.label
 		str = str + ' ' + self.table.__str__()
@@ -1304,13 +1314,70 @@ class WideEventToggle(PulseSequenceElement):
 			self.event.draw(draw_obj)
 
 class VPulse:
-	"""Varian pulse data access object (DAO)
+	"""Varian pulse class
 	"""
-	def __init__(self,pw='0.0',ph='zero',gt1='rof1',gt2='rof2'):
+	def __init__(self,pw='0.0',ph='zero',gt1='rof1',gt2='rof2',channel=1,power='high'):
 		self.pw = pw
 		self.ph = ph
 		self.gt1 = gt1
 		self.gt2 = gt2
+		self.channel = channel  #hardware channel 1,2,3,4,...
+		self.power = power
+	def render(self):
+		if self.channel == 1:
+			call = 'rgpulse'
+		elif self.channel == 2:
+			call = 'decrgpulse'
+		elif self.channel == 3:
+			call = 'dec2rgpulse'
+		return '\t%s(%s,%s,%s,%s);' % (call,self.pw,self.ph,self.gt1,self.gt2)
+
+class VSimPulse:
+	"""Class for Varian simultaneous square pulse
+	"""
+	def __init__(self):
+		self.events=[None,None,None] #up to three simultaneous pulses
+	def add_event(self,p):
+		"""add VPulse object to slot corresponding to the channel
+		"""
+		if isinstance(p,Pulse):
+			vp = p.get_varian_parameters()
+		elif isinstance(p,VPulse):
+			vp = p
+		else:
+			raise 'wrong parameters type in VSimPulse.add_event()'
+		ch = vp.channel
+		self.events[ch-1] = vp
+
+	def render(self):#VSimPulse.render()
+		"""print simpulse or sim3pulse statement
+		using VSimPulse object
+		"""
+		if self.events[2] != None:
+			call = 'sim3pulse'
+			if self.events[1] == None:
+				self.add_event(VPulse(channel=2))
+			if self.events[0] == None:
+				self.add_event(VPulse(channel=1))
+		else:
+			call = 'simpulse'
+			if self.events[0] == None:
+				raise CompilationError('no pulse on channel 1 in Varian simpulse')
+		if len(self.events) > 3:
+			raise CompilationError('more then 3 simultaneous pulses for varian not supported yet')
+
+		events = []
+		for e in self.events:
+			if e != None:
+				events.append(e)
+
+		text = '\t%s(' % call
+		for e in events:
+			text = text + e.pw + ','
+		for e in events:
+			text = text + e.ph + ','
+		text = '%s%s,%s);' % (text,events[0].gt1,events[0].gt2) #temporary plug
+		return text
 
 class Pulse(PulseSequenceElement):
 	"""class for RF pulse
@@ -1318,7 +1385,7 @@ class Pulse(PulseSequenceElement):
 	def __init__(self,type,channel,name=None):
 		PulseSequenceElement.__init__(self)
 		self._type = 'rf_pulse'
-		self.type = type #90,180, shp, rect, etc
+		self.type = type #90,180, shp, rect, lp, etc
 		self.name = name
 		#extra stuff
 		self.length = None 
@@ -1367,7 +1434,7 @@ class Pulse(PulseSequenceElement):
 			self.drawing_height = maxh
 		PulseSequenceElement.calc_drawing_dimensions(self)
 
-	def get_varian_parameters(self):
+	def get_varian_parameters(self):# Pulse.get_varian_parameters()
 		pw = self.varian_name
 		if self.phase != None:
 			ph = self.phase.varian_name	
@@ -1375,7 +1442,18 @@ class Pulse(PulseSequenceElement):
 			ph = 'zero'
 		rof1 = self.pre_gating_delay.get_varian_expression()
 		rof2 = self.post_gating_delay.get_varian_expression()
-		vpulse = VPulse(pw=pw,ph=ph,gt1=rof1,gt2=rof2)
+
+		ps = self.pulse_sequence
+		ch = ps.get_channel(self.channel).hardware
+
+		#todo remove temporary plug
+		#power for pulses muset be more global parameter, like phase
+		#now power is either 'high', or 'set' - bespoke for each pulse
+		power = 'set'
+		if self.type in ['180','90']:
+			power = 'high'
+
+		vpulse = VPulse(pw=pw,ph=ph,gt1=rof1,gt2=rof2,channel=ch,power=power)
 		if self.type == '180':
 			vpulse.pw = vpulse.pw + '*2' #todo remove temp plug, should use expr p180=2*p
 		return vpulse
@@ -1787,6 +1865,9 @@ class PulseSequence:
 				raise ParsingError("Duplicate channel %s. Please use unique names for channels" % key)
 			names[key] = 1
 		return names.keys()
+
+	def get_rf_channels(self):
+		return self._rf_channel_table.values()
 
 	def get_draw_object(self):
 		return self._draw_object
@@ -2305,6 +2386,7 @@ class PulseSequence:
 				phases = self._get_objects('phases',p.phase)
 				if len(phases) == 1:
 					p.template.phase = phases[0]
+					p.template.phase.fix_table_into_array()#todo remove temp plug
 				elif len(phases) > 1:
 					raise 'internal error: too many phase objects named %s' % p.phase
 
@@ -2353,10 +2435,13 @@ class PulseSequence:
 		self._init_phases()
 		self._parse_variables('phases',{'label':'str',
 						'table':'int-list'})
-		self._attach_phases_to_pulses()
+
+		#todo remove temp plug (fixing phase arrays)
+		self._attach_phases_to_pulses() #and fix phase arrays
 
 		self._parse_variables('rfchan',{'label':'str',
-						'nucleus':{'type':'str','values':['C','N','H','P','F']}
+						'nucleus':{'type':'str','values':['C','N','H','P','F']},
+						'hardware':'int'
 						})
 		self._parse_variables('pfgchan',{'label':'str'})
 
@@ -2907,10 +2992,12 @@ class PulseSequence:
 	def _varian_init_phase_tables(self,phases):
 		i = 1
 		output = ['\t/* set phase tables */']
+		printed = []
 		for ph in phases:
 			tname = 't%d' % i
 			text = '\tsettable(%s, %d, %s);' % (tname,len(ph.table),ph.name)
 			ph.varian_name = tname
+
 			output.append(text)	
 			i = i+1
 		return output
@@ -2918,7 +3005,7 @@ class PulseSequence:
 	def _varian_translate_name(self,name):
 		"""name translations
 		"""
-		varian_names = {'pfg_recovery_delay':'gstab','rf_pulse_gating_delay':'rof',}
+		varian_names = {'pfg_recovery_delay':'gstab','rf_pulse_gating_delay':'rof1',}
 		if varian_names.has_key(name):
 			return varian_names[name]
 		else:
@@ -2928,7 +3015,17 @@ class PulseSequence:
 		"""list of varian environment variables
 		"""
 		#list to be continued
-		return ['rof','sw','sw1','sw2','phase','phase2','ni','ni2','ct']
+		return ['rof1','sw','sw1','sw2','phase','phase2','ni','ni2','ct']
+
+	def _c_punctuate_var_list(self,list):
+		"""input list containts c variables definitions of same type
+		all elements of the list receive comma at the end
+		the last element gets semicolon ;
+		resulting list can be printed out as a valid c statement
+		"""
+		for i in range(len(list)-1):
+			list[i] = list[i] + ','
+		list[-1] = list[-1] + ';'
 
 	def _varian_declare_vars(self):
 		"""return list of lines containing variable declaration and initiatization
@@ -2937,10 +3034,8 @@ class PulseSequence:
 		if len(self._pulse_list) + len(self._delay_list) + len(self._gradient_list) == 0:
 			return
 
-		out = ['double  /* declare variables */']
 
-		if len(self._pulse_list):
-			out.append('\n\t/* pulses */');
+		var_text = []
 
 		#here I have to work around a problem of many copies of elements
 		printed_pulses = []
@@ -2967,9 +3062,15 @@ class PulseSequence:
 				channel._varian_hard_pulse_power_variable = p_pwr
 
 			if p not in printed_pulses: #here goes the workaround
-				out.append('\t%s = getval("%s"),' % (p_name,p_name))
-				out.append('\t%s = getval("%s"),\n' % (p_pwr,p_pwr))
+				var_text.append('\t%s = getval("%s")' % (p_name,p_name))
+				var_text.append('\t%s = getval("%s")' % (p_pwr,p_pwr))
 				printed_pulses.append(p)
+
+		self._c_punctuate_var_list(var_text)
+
+		if len(var_text):
+			out = ['double  /* declare pulses */']
+			out.extend(var_text)
 
 		#might want to use these variables to check for negative delays
 		#for better error checking
@@ -2987,28 +3088,39 @@ class PulseSequence:
 
 
 		delay_names = []
+		var_text = []
 		if len(self._primary_delay_list):
-			out.append('\t/* user set delays */')
 			for delay in self._primary_delay_list:
 				if delay.type != 'acq': #remove temp plug breaks explicit acq
 					d = delay.name + '_dly' #this is to screen real-time t variables, etc
 					delay.varian_name = d
 					if d not in delay_names:
-						out.append('\t%s = getval("%s"),' % (d,delay.name))
+						var_text.append('\t%s = getval("%s")' % (d,delay.name))
 						delay_names.append(d)
+
+		self._c_punctuate_var_list(var_text)
+		if len(var_text):
+			out.append('double /* user set delays */')
+			out.extend(var_text)
+
 		delay_names = []
+		var_text = []
 		if len(self._hardware_delay_list):
-			out.append('\n\t/* hardware-specific delays */')
 			for delay in self._hardware_delay_list:
 				d = self._varian_translate_name(delay.name)
 				delay.varian_name = d #varian_name
 				if d not in self._varian_environment_names() and d not in delay_names:
-					out.append('\t%s = getval("%s"),' % (d,d))
+					var_text.append('\t%s = getval("%s")' % (d,d))
 					delay_names.append(d)
 
+		self._c_punctuate_var_list(var_text)
+		if len(var_text):
+			out.append('double /* hardware specific delays */')
+			out.extend(var_text)
+
 		grad_names = []
+		var_text = []
 		if len(self._gradient_list):
-			out.append('\n\t/* gradients */')
 			for grad in self._gradient_list:
 				g = grad.name
 				gre = re.compile(r'^(.*)(\d+)$')
@@ -3027,12 +3139,16 @@ class PulseSequence:
 				grad.varian_grad_span = gt    #varian_grad_span
 				if g not in grad_names:
 					#print declaration and initialization
-					out.append('\t%s = getval("%s"),' % (gt,gt))
-					out.append('\t%s = getval("%s"),' % (glvl,glvl))
+					var_text.append('\t%s = getval("%s")' % (gt,gt))
+					var_text.append('\t%s = getval("%s")' % (glvl,glvl))
 					#for gradient level and gradient duration time
 					grad_names.append(g)
 
-		out.append('\t;');
+		self._c_punctuate_var_list(var_text)
+		if len(var_text):
+			out.append('double /* gradients */')
+			out.extend(var_text)
+
 		return out;
 
 	def _varian_build_freq_discrimination(self):
@@ -3061,7 +3177,7 @@ class PulseSequence:
 			ch = self.get_channel(e.channel)
 			if toggle.type == 'on':
 				#set power  todo normally there must just be power switch event
-				out.append(self._varian_set_power_for_event(e)) #todo remove plug call
+				out.append(self._varian_adjust_power_for_events_if_needed([e])) #todo remove plug call
 				#like for pulses need to use table obspower, decpower, dec2power, etc
 				out.append(self._varian_next_status_statement());
 				ch.wide_event_on()
@@ -3082,18 +3198,24 @@ class PulseSequence:
 			nuclei = {}
 			types = {}
 			edges = {}
+			hardware = {}
 			for e in events:
-				nuclei[self.get_channel(e.channel).nucleus] = 1
+				ch = self.get_channel(e.channel)
+				hardware[ch.hardware] = 1
+				nuclei[ch.nucleus] = 1
 				types[e.type] = 1
 				edges[e.edge] = 1
+			hlist = hardware.keys()
 			nlist = nuclei.keys()
 			tlist = types.keys()
 			elist = edges.keys()
+
 			if len(elist) > 1:
 				raise CompilationError('different pulse edge alignment on the same anchor not yet supported for varian')
 			elif elist[0] != 'center' and len(events) > 1:
 				raise CompilationError('simultaneous pulses for Varian can be only centered at this time')
 
+			#todo: handle shaped pulses within VPulse and VSimPulse objects
 			if 'sh' in tlist:
 				#prepare shaped pulse
 				if len(nlist) > 1:
@@ -3104,41 +3226,22 @@ class PulseSequence:
 					pass
 			else:
 				#prepare rectangular pulse
-				if len(nlist) > 1:
+				if len(hlist) > 1:
 					#simultaneous rectangular pulse
 					call = ''
-					pars = []
+					vsp = VSimPulse()
 					for p in events:
-						pars.append(p.get_varian_parameters())
+						vsp.add_event(p)
 
-					if len(nlist) == 2:
-						if 'N' in nlist:
-							call='sim3pulse'
-							dummy = VPulse()
-							if not 'H' in nlist:
-								pars.insert(0,dummy) #magic number
-							if not 'C' in nlist:
-								pars.insert(1,dummy) #magic number
-						else:
-							call='simpulse'
-					elif len(nlist) == 3:
-						call = 'sim3pulse'
-					else:
-						raise CompilationError('more then 3 simultaneous pulses for varian not supported yet')
-					text = '\t%s(' % call
-					for par in pars:
-						text = text + par.pw + ','
-					for par in pars:
-						text = text + par.ph + ','
-					text = '%s%s,%s);' % (text,pars[0].gt1,pars[0].gt2) #temporary plug
+					text = vsp.render()
 					out.append(text)
 				else:
-					#ordinary pulse
-					pulse_calls = {'H':'rgpulse','C':'decrgpulse','N':'dec2rgpulse'}
 					p = events[0]
-					call = pulse_calls[self.get_channel(p.channel).nucleus]
-					par = p.get_varian_parameters()
-					out.append('\t%s(%s,%s,%s,%s);' % (call,par.pw,par.ph,par.gt1,par.gt2))
+					text = self._varian_set_power_if_needed([p])
+					if text != Null:
+						out.append(text)
+					vp = p.get_varian_parameters()
+					out.append(vp.render())
 		return out
 
 	def _varian_set_power_for_event(self,event): #todo this needs to be seriously redone
@@ -3156,7 +3259,11 @@ class PulseSequence:
 	def _varian_restore_default_power_after_event(self,event): #todo this needs to be seriously redone
 		ch = self.get_channel(event.channel)
 		nuc = ch.nucleus
-		lvl = ch._varian_hard_pulse_power_variable
+		#todo remove plug
+		if not self.__dict__.has_key('_varian_hard_pulse_power_variable'):
+			lvl = '%s90pwr' % nuc
+		else:
+			lvl = ch._varian_hard_pulse_power_variable
 		if nuc == 'H':
 			return 'obspower(%s);' % lvl
 		elif nuc == 'C':
@@ -3172,6 +3279,18 @@ class PulseSequence:
 		self._varian_cstatus = cstat + 1
 		return 'status(%s);' % status[cstat]
 
+	def _varian_set_hard_pulse_power_levels(self):
+		out = []
+		channels = self.get_rf_channels()
+		channels.sort(lambda x,y: x.hardware - y.hardware)
+
+		call = {1:'obspower',2:'decpower',3:'dec2power'}
+
+		for ch in channels:
+			text = '\t%s(%s90pwr);' % (call[ch.hardware],ch.nucleus)
+			out.append(text)
+		return out
+
 	def _varian_build_pulse_sequence_body(self):
 		self._varian_status_table = 'ABCDEFGHIJKLMNOPQRST'
 		self._varian_cstatus = 0
@@ -3180,6 +3299,12 @@ class PulseSequence:
 		cg = glist.next()
 		out = []
 		out.append(self._varian_next_status_statement())
+
+		out.append("\trcvroff();")
+		#set power levels
+		out.extend(self._varian_set_hard_pulse_power_levels())
+		out.append('')
+
 		for g in glist:
 			delay = cg.post_delay
 			text = delay.get_varian_code()
@@ -3208,10 +3333,15 @@ class PulseSequence:
 		sequence object
 		"""
 		text = []
-		text.append("#include <standard.h>\n");
+		text.append("#include <standard.h>");
+		text.append("#define MAX(a,b) (a>b)?a:b\n");
 
 		#print phase tables
-		phases = self.get_phase_tables()
+		phases_tmp = self.get_phase_tables()
+		phases = [] #todo this needs to be fixed
+		for ph in phases_tmp:
+			if ph not in phases:
+				phases.append(ph)
 
 		for ph in phases:
 			text.append('static int %s[%d]=%s;' % (ph.name,len(ph.table),carray(ph.table)))
@@ -3229,8 +3359,6 @@ class PulseSequence:
 		text.extend(self._varian_init_phase_tables(phases))
 
 		#set frequency discrimination scheme
-
-		#set power levels
 
 		#start pulse sequence
 		text.extend(self._varian_build_pulse_sequence_body())
