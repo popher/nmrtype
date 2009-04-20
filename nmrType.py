@@ -3430,7 +3430,7 @@ class PulseSequence:
 
 		for ch in channels:
 			lvl = '%s90pwr' % ch.nucleus
-			text = '\t%s(%s90pwr);' % (call[ch.hardware],lvl)
+			text = '\t%s(%s);' % (call[ch.hardware],lvl)
 			ch.power = lvl#remember new setting a state
 			out.append(text)
 		return out
@@ -3512,8 +3512,6 @@ class PulseSequence:
 			if quad_type != 'states_tppi':
 				raise CompilationError('quad != states_tppi() not supported yet, have %s' % quad_type)
 			phases = dim.quad.get_args()
-
-			print phases
 
 			#add hypercomplex freq discrimination
 			out.append('\tif ((int)(getval("phase%s") + 0.5) == 2){' % phase_index[cdim])
