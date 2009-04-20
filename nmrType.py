@@ -109,7 +109,8 @@ def draw_latex(text,pulse_sequence,coor,yplacement='center',xplacement='center')
 	paste_image(im,pulse_sequence,coor,yplacement,xplacement)
 	
 def parse_param(input):
-	#utility function loads key=value pairs into a table
+	"""utility function loads key=value pairs into a table
+	"""
 	bits = input.split('=')
 	if len(bits) == 2:
 		return {bits[0].strip():bits[1].strip()}
@@ -205,6 +206,38 @@ class ChannelCodeParsingError:
 		print self.error_text
 		print 'Problem line:'
 		print 'channel %s: %s' % (self.channel_name,self.channel_text)
+	
+class FunctionVar:
+	"""DAO type class for function type variables in PulseScript
+	"""
+	def __init__(self,name,vars):
+		"""vars is array of associative arrays of following structure
+		[{type:positional|named,name:Null|name,value:value},...]
+		variables should be all positional or all named
+		"""
+		self.name = name
+		type = vars[0]['type']
+		for var in vars:
+			if var['type'] != type:
+				raise ParsingError('variables must be either all named or all positional')
+		self.var_type = type
+		if type == 'positional':
+			args = []
+			for var in vars:
+				args.append(var['value'])
+		elif type == 'named':
+			args = {}
+			for var in vars:
+				args[var['name']] = var['value']
+		else:
+			raise 'internal error unknown type of function variable in PulseScript source'
+		self.args = args 
+	def get_arg(self,key):
+		return self.args[key]
+	def get_args(self):
+		return self.args
+	def get_name(self):
+		return self.name
 
 class Decoration:
 	def __init__(self,type,code):
@@ -247,7 +280,7 @@ class N:
 	def get_val(self):
 		return self._val
 
-	def get_primary_delay_list(self):
+	def get_primary_delay_list(self): #N.get_primary_delay_list()
 		"""dummy function needed for recursive retrieval of 
 		primary delay lists from the expressions
 		"""
@@ -316,7 +349,7 @@ class E:
 	def get_type(self): #E.get_type()
 		return 'expression';
 
-	def get_primary_delay_list(self):
+	def get_primary_delay_list(self): #E.get_primary_delay_list()
 		"""return list of primary delay components of
 		the expression
 		"""
@@ -840,6 +873,11 @@ class AnchorGroup:
 		out = out + 'Post delay: ' + self.post_delay.__str__()
 		return out + '\n'
 
+class Dimension:
+	def __init__(self,name):
+		self.name = name
+		self.template = None
+
 class Channel:
 	def __init__(self,name,type):
 		self.type = type
@@ -929,7 +967,7 @@ class PulseSequenceElement(E): #this is weird - element inherits from expression
 	def set_ycoor(self,ycoor):#PulseSequenceElement.set_ycoor()
 		self.ycoor = ycoor
 
-	def get_primary_delay_list(self):
+	def get_primary_delay_list(self): #PulseSequenceElement.get_primary_delay_list()
 		"""dummy function that returns empty list
 		only delays should return primary delay components from
 		their expressions
@@ -1190,7 +1228,7 @@ class Delay(PulseSequenceElement):
 		#used to print out formula, but so far it's empty anyway
 		return '%s label=%s formula=%s' % (self.name,self.label,expr)
 
-	def get_primary_delay_list(self):
+	def get_primary_delay_list(self): #Delay.get_primary_delay_list()
 		if self.expr == None:
 			return [self]
 		else:
@@ -1650,10 +1688,12 @@ class PulseSequence:
 		self._object_type_list = ('pfg','pfg_wide','rf_pulse','rf_wide_pulse',
 								'acq','phase')
 		for ot in self._object_type_list:
-			self.__dict__[ot + '_table'] = {}
+			self.__dict__[ot + '_table'] = {} #???is this duplication of below code?
 
 		self._rf_channel_table = {}
 		self._pfg_channel_table = {}
+		self._dim_table = {} #table to contain information about indirect dimensions (maybe all?)
+		self._dim_order = [] 
 		self._delay_list = [] 
 		self._decoration_list = []
 		self._draft_image_no = 0
@@ -1762,8 +1802,27 @@ class PulseSequence:
 	def get_pulses(self):
 		return self.get_elements('rf_pulse')
 
-	def get_delays(self):
-		return self._delay_list
+	def get_phase(self,name):
+		phases = self.get_phase_tables()
+		for ph in phases:
+			if ph.name == name:
+				return ph
+		return None
+
+	def get_delays(self,d_name=None):
+		delay_list = []
+		for g in self._glist:
+			if d_name != None:
+				if g.post_delay != None and g.post_delay.name == d_name:
+					delay_list.append(g.post_delay)
+			else:
+				if g.post_delay != None:
+					delay_list.append(g.post_delay)
+
+		if d_name != None:
+			if len(delay_list) == 0:
+				raise 'no delays named %s found in the pulse sequence' % d_name
+		return delay_list
 
 	def get_gradients(self):
 		return self.get_elements('pfg')
@@ -1893,21 +1952,6 @@ class PulseSequence:
 					if e.get_type() == 'acq':
 						acq_list.append(e)
 		return acq_list
-
-	def get_delays(self,d_name=None):
-		delay_list = []
-		for g in self._glist:
-			if d_name != None:
-				if g.post_delay != None and g.post_delay.name == d_name:
-					delay_list.append(g.post_delay)
-			else:
-				if g.post_delay != None:
-					delay_list.append(g.post_delay)
-
-		if d_name != None:
-			if len(delay_list) == 0:
-				raise 'no delays named %s found in the pulse sequence' % d_name
-		return delay_list
 
 	def get_named_pulse_table1(self):
 		return self.rf_pulse_table
@@ -2168,6 +2212,12 @@ class PulseSequence:
 				else:
 					raise ParsingError('misformed pfg statement %s' % bit)
 
+	def _parse_dim(self):
+		code_table = self._code['dim'].table
+		self._dim_order = self._code['dim'].item_order
+		for dim_name in code_table.keys():
+			self._dim_table[dim_name] = Dimension(dim_name)
+
 	def _parse_rf(self):
 		"""parses the main part of pulse sequence record: channel events
 		"""
@@ -2256,6 +2306,8 @@ class PulseSequence:
 			return [self._rf_channel_table[name]]
 		elif type == 'pfgchan':
 			return [self._pfg_channel_table[name]]
+		elif type == 'dim':
+			return [self._dim_table[name]]
 		else:
 			raise '_get_objects not implemented for type %s' % type
 
@@ -2277,13 +2329,43 @@ class PulseSequence:
 			return val_input
 		elif val_type == 'bool':
 			true_re = re.compile(r'^true$',re.IGNORECASE)
-			false_re = re.compile(r'^false',re.IGNORECASE)
+			false_re = re.compile(r'^false$',re.IGNORECASE)
 			if true_re.match(val_input):
 				return True
 			if false_re.match(val_input):
 				return False
 			else:
 				raise ParsingError('cannot parse boolean value from %s' % val_input)
+		elif val_type == 'function':
+			func_re = re.compile(r'^(%s)\(([^)]+)\)\s*$' % label_regex_token)
+			m = func_re.match(val_input)
+			if m:
+				func_name = m.group(1)
+				func_var_input = m.group(2)
+				#parse function variables
+				vars = func_var_input.split(',')
+				named_var_re = re.compile(r'^([^:]+):([^:]+)$')
+				colon_re = re.compile(r':')
+				var_compiled = []
+				for var in vars:
+					var = var.strip()
+					m = named_var_re.match(var)
+					if m:
+						var_type = 'named'
+						var_name = m.group(1)
+						var_value = m.group(2)
+					else:
+						if colon_re.match(var):
+							raise ParsingError('only one colon allowed in %s variable \
+							definition of function %s' % (var,func_name))
+						var_type = 'positional'
+						var_value = var
+						var_name = None
+					var_compiled.append({'type':var_type,'name':var_name,'value':var_value})
+				return FunctionVar(func_name,var_compiled)
+			else:
+				raise ParsingError('cannot parse function style value %s' % val_input)
+				
 		elif isinstance(val_type,str):
 			list_re = re.compile(r'^(.*?)-list$')
 			m = list_re.match(val_type)
@@ -2330,6 +2412,7 @@ class PulseSequence:
 			obj_list = self._get_objects(type,obj_name)
 			for obj in obj_list:
 				#todo problem: channels don't need template, but who cares....(for now)
+				#dimensions don't have templates either
 				if obj.template == None:
 					obj.template = PulseSequenceElementTemplate(type,obj_name)
 
@@ -2344,7 +2427,7 @@ class PulseSequence:
 						if key not in key_table.keys():
 							raise ParsingError('key \'%s\' not allowed for %s' % (key,type))
 					var_type = key_table[key]
-					var_value = self._typecast_value(var_input,var_type)
+					var_value = self._typecast_value(var_input,var_type) #recognize types of values
 					obj.__dict__[key] = var_value 
 					obj.template.__dict__[key] = var_value 
 
@@ -2407,6 +2490,7 @@ class PulseSequence:
 		self._parse_time() #populate _delay_list, set timed and timing delays to anchor groups
 		self._parse_rf()
 		self._parse_pfg()
+		self._parse_dim()
 
 		delay_parameters = { 'length':'float', 'label':'str', 'formula':'str',
 					'show_at':'str', 'hide':'bool', 'label_yoffset':'int'}
@@ -2451,6 +2535,8 @@ class PulseSequence:
 						})
 		self._parse_variables('pfgchan',{'label':'str'})
 
+		self._parse_variables('dim',{'sampling':'function','quad':'function'})
+		
 		self._parse_decorations()#decorations are contained in DecorLineList object
 
 		self._assign_delays_to_channels()#decide at what channel draw delay symbols
@@ -2486,6 +2572,7 @@ class PulseSequence:
 		cpd = CodeLineTable(r'^\s*(?:wp|cpd)\s+(%s)\s*:(.*)$' % label_regex_token)
 		rfchan = CodeLineTable(r'^\s*rfchan\s+(%s)\s*:(.*)$' % label_regex_token)
 		pfgchan = CodeLineTable(r'^\s*pfgchan\s+(%s)\s*:(.*)$' % label_regex_token)
+		dimensions = CodeLineTable(r'^\s*dim\s+(%s)\s*:(.*)$' % label_regex_token)
 
 		decorations = DecorLineList(r'^\s*decoration\s+(%s)\s*:(.*)$' % label_regex_token)
 
@@ -2510,13 +2597,15 @@ class PulseSequence:
 					cpd.try_add_code(line)
 					rfchan.try_add_code(line)
 					pfgchan.try_add_code(line)
+					dimensions.try_add_code(line)
 					raise ParsingError('could not recognize input line\n%s' % line)
 				except CodeLineSuccess:
 					pass
 
 		self._code = {'disp':disp,'time':time,'rf':rf,'pfg':pfg,'acq':acq,'anchors':anchors,
 				'pulses':pulses,'phases':phases,'delays':delays,'decorations':decorations,
-				'gradients':gradients,'cpd':cpd,'rfchan':rfchan,'pfgchan':pfgchan}
+				'gradients':gradients,'cpd':cpd,'rfchan':rfchan,'pfgchan':pfgchan,
+				'dim':dimensions}
 
 
 	def _assign_delays_to_channels(self):
@@ -2892,6 +2981,8 @@ class PulseSequence:
 		self._hardware_delay_list = []
 		self._rf_channel_table = src._rf_channel_table
 		self._pfg_channel_table = src._pfg_channel_table
+		self._dim_table = src._dim_table
+		self._dim_order = src._dim_order
 					
 	def _compile_add_anchor_group(self,anchor):
 		ng = AnchorGroup()
@@ -3184,9 +3275,6 @@ class PulseSequence:
 
 		return out;
 
-	def _varian_build_freq_discrimination(self):
-		return []
-
 	def _varian_print_events(self,events):
 		if len(events) == 0:
 			return []
@@ -3383,6 +3471,75 @@ class PulseSequence:
 			cg = g
 		return out
 
+	def _varian_build_quad_detection_statements(self):
+		dim_table = self._dim_table
+		dim_order = self._dim_order
+		cdim = 1
+		phase_index = {1:'',2:'2',3:'3',4:'4'}
+		dly_index = {1:'2',2:'3',3:'4',4:'5'}
+
+		out = []
+		for d in dim_order:
+			dim = dim_table[d]
+			cdly = dly_index[cdim]
+
+			#take care of the incremented delay
+			dim_dly = Delay('d%s' % cdly)
+
+			sampling_type = dim.sampling.get_name()
+			if sampling_type != 'linear':
+				raise CompilationError('only linear sampling supported for indirect dimensions, have %s' \
+					% sampling_type)
+			inc_delays = dim.sampling.get_args()
+
+			for dly_name in inc_delays.keys():
+				dly_list = []
+				for pdelay in self._primary_delay_list:
+					if pdelay.name == dly_name:
+						dly_list.append(pdelay)
+				#todo move this into parsing phase
+				try:
+					coeff = float(inc_delays[dly_name])
+				except:
+					raise ParsingError('numeric coefficient expected in sampling expression, have %s' \
+						% inc_delays[dly_name])
+				for dly in dly_list:
+					expr = dly.expr
+					dly_copy = Delay(dly.name) #this looks like a hack
+					dly.expr = E('add',E('mul',dim_dly,N(coeff)),dly_copy)
+
+			quad_type = dim.quad.get_name()
+			if quad_type != 'states_tppi':
+				raise CompilationError('quad != states_tppi() not supported yet, have %s' % quad_type)
+			phases = dim.quad.get_args()
+
+			print phases
+
+			#add hypercomplex freq discrimination
+			out.append('\tif ((int)(getval("phase%s") + 0.5) == 2){' % phase_index[cdim])
+			for ph in phases:
+				rt_table = self.get_phase(ph).varian_name
+				out.append('\t\ttsadd(%s,1,4);' % rt_table)
+			out.append('\t}')
+			out.append('\t{')
+			out.append('\t\tdouble d%s_init = 0.0;' % cdly)
+			out.append('\t\tint t%d_counter;' % cdim)
+			out.append('\t\tif (ix==1){')
+			out.append('\t\t\td%s_init = d%s;' % (cdly,cdly))
+			out.append('\t\t}')
+			out.append('\t\tt%d_counter = (int)((d%s-d%s_init)*sw%d + 0.5);' % (cdim,cdly,cdly,cdim))
+			out.append('\t\tif (t%d_counter%%2){' % cdim)
+			for ph in phases:
+				rt_table = self.get_phase(ph).varian_name
+				out.append('\t\t\ttsadd(%s,2,4);' % rt_table)
+			#todo fix this assuming that have only one acquisition
+			acq_rt_table = self.get_acquisitions()[0].event.phase.varian_name #pretty ugly 
+			out.append('\t\t\ttsadd(%s,2,4);' % acq_rt_table)
+			out.append('\t\t}')
+			out.append('\t}')
+			cdim = cdim + 1
+		return out
+
 	def print_varian(self):
 		"""Creates varian pulse sequence file based on the pulse
 		sequence object
@@ -3414,6 +3571,7 @@ class PulseSequence:
 		text.extend(self._varian_init_phase_tables(phases))
 
 		#set frequency discrimination scheme
+		text.extend(self._varian_build_quad_detection_statements())
 
 		#start pulse sequence
 		text.extend(self._varian_build_pulse_sequence_body())
