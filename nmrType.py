@@ -2853,9 +2853,9 @@ class PulseSequence:
 		self._init_drawing_parameters()#set basic drawing parameters
 		self._prepare_for_drawing()#determine sizes of all objects
 		self._init_drawing_object()#calculate channel y-offsets and image height
-		#(file,link) = self._create_output_file()
-		self._draw('test.gif')
-		#print link #prints url to the newly created image
+		(file,link) = self._create_output_file()
+		self._draw(file)
+		print link #prints url to the newly created image
 
 	def _recalc_anchor_group_delays(self,g,pre_dly):
 		"""update expression in the pre_dly
