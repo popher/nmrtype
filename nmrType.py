@@ -4,6 +4,7 @@ import os
 
 #including slash in the end use blank if all is in paths
 #settings for 1&1
+#silly comment
 latex_dir = '/usr/local/texlive/2008/bin/x86_64-linux/'
 IMAGE_DIR = '/var/www/vhosts/default/htdocs/nmrwiki/wiki/images/NMRPulse' #where to put image files
 IMAGE_DIR_URL = 'http://nmrwiki.org/wiki/images/NMRPulse'
