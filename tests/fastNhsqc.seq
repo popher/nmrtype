@@ -1,0 +1,47 @@
+anchors:      @a[2]      @b       @c[4]           @d       @e[4]                  @f[3]              @g[3]      @h[2]
+time:    rlx  @a1 tau    @b  tau  @c2-c4   t12    @d  t12  @e1-e3       tau       @f2      tau       @g3   aq   @h1
+rf H:       90@a1     180@b     90@c2          180@d        90@e3     lp@f1    180@f2 lp@f3       acq@g3---------h1
+rf N:                 180@b      90@c4                   90@e1                 180@f2              cpd@g2---------h2
+rf C:                                       180@d
+pfg z:       g1@a2         g1@c1 g2@c3                     g2@e2  g3@e4                       g3@g1
+
+[rf channels]
+H: nucleus=H label=^1H hardware=1
+N: nucleus=N label=^{15}N hardware=3
+C: nucleus=C label=^{13}C hardware=2
+
+[pfg channels]
+z: label=grad\ z
+
+[dimensions]
+N: sampling=linear(t12:0.5) quad=states_tppi(phi1)
+
+[delays]
+tau: label=\tau
+t12: label=\frac{t_1}{2} show_at=N
+aq: hide=true
+
+[rf elements]
+90@a,e3: edge=right
+180@b.H: phase=y
+180@b.N: phase=phi1
+90@c2: phase=y edge=left
+90@c4: phase=phi1 edge=left comp=after
+180@d: phase=phi3
+90@e1: phase=phi2 edge=right comp=before
+lp: phase=xneg
+acq: phase=rph type=fid
+cpd@g2-h2: label=waltz16 h1=50 h2=50
+
+[gradients]
+g1: strength=50 label=g_1
+g2: strength=50 label=g_2
+g3: strength=50 label=g_3
+
+[phases]
+y: table=1
+xneg: label=\overline{x} table=2
+phi1: label=\phi_1 table=0,2
+phi2: label=\phi_2 table=2(0),2(2)
+phi3: label=\phi_3 table=4(1),4(2)
+rph: table=0,2,2,0

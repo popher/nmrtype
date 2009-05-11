@@ -1,13 +1,15 @@
 anchors:  @a      @b        @c         @d          @e-------------f    @g
 time: rlx @a t1   @b tm     @c t2      @d spinlock @e-------------f aq @g
-rf H:   90@a=p1  90@b=p2  90@c=p3   cpd@d-----------e=mlev17  acq@f-----g
+rf H:   90@a     90@b     90@c      cpd@d-----------e         acq@f-----g
 
 delay rlx: label=d_1
 delay t1: label=\tau_1
 delay t2: label=\tau_2
 delay tm: label=t_{m,noe}
-pulse p1: edge=left comp=after
-pulse p2: edge=right comp=before
-pulse p3: edge=left comp=after
 delay spinlock: label=spinlock label_yoffset=-12
-cpd mlev17: h1=50 h2=50
+
+pulse 90@a: edge=left comp=after
+pulse 90@b: edge=right comp=before
+pulse 90@c: edge=left comp=after
+pulse cpd@d-e: h1=50 h2=50
+

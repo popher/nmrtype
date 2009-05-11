@@ -1,0 +1,66 @@
+anchors:  @a     @b           @c      @d[4]            @e[2]     @f3       @g6                    @h      @i[2]    @j[5]             @k[3]     @l[5]                     @m[4]      @n[3]
+time:     @a rlx @b           @c tauN @d1-------d4 eta @e1  t12  @f2  t12  @g2----------g5  tauN2 @h td21 @i1 td22 @j1------j4 t22   @k2 t22   @l2--------------l5 delta @m1-m4  aq @n1
+rf H:   cw@a-----@b    (inept)@c------@d1 s90@d2              180@f2           s90@g4 90@g5    180@h             90@j1 s90@j2                      s90@l4  (wg)@l5--------m1 acq@m4-@n1
+rf C:                                                                                                  180@i1            90@j4               90@l2         (wg)@l5--------m1 cpd@m2-@n3
+rf N:                  (inept)@c------@d1    90@d4  180@e1               90@g2                 180@h                              180@k2                                     cpd@m3-@n2
+pfg z:                 (inept)@c------@d1   g2@d3     bg1@e2--f1 ~bg1@f3--@g1  g3@g3   g4@g6            g4@i2           g5@j3 bg2@j5-k1 ~bg2@k3-l1 g6@l3   (wg)@l5--------m1
+
+[rfchan]
+H: nucleus=1H
+C: nucleus=13C
+N: nucleus=15N
+
+[dimensions]
+N: quad=states_tppi(phi1,phi2) sampling=linear(t12:0.5)
+C: quad=states_tppi(phi4,phi5) sampling=linear(t22:0.5)
+
+[delays]
+tauN: label=\tau
+eta: label=\eta
+delta: label=\delta
+tauN2: formula=tauN/2
+td21: formula=tauN2-delta/2
+td22: formula=delta/2
+
+[options]
+presat: event=cw@a-b.H
+
+[includes]
+(inept): seq=pfg-inept from=H to=N grad=z phase1=phi1 phase2=y comment="H->N inept"
+(wg): seq=het-pfg-watergate proton=H xnuc=C comment="watergate"
+
+[rfevents]
+cw: comment="proton pre-irradiation"
+90@g2: edge=right
+180@i1: phase=phi4
+90@j4: phase=phi5 edge=left comp=true
+90@l2: edge=right comp=true
+s90@d2,l4: phase=negx
+90@d4,180@e1: phase=phi2
+90@d4: edge=left comp=true
+180@f2: phase=phi3
+acq: phase=rec
+cpd: sequence=garp
+
+
+[pfgevents]
+(inept.g): strength=41
+g2: strength=7
+g3: strength=11
+g4: strength=53
+g5: strength=23
+inept.g,g2,g3,g4,g5: shape=sine length=1m
+(wg.g): strength=85 shape=sine length=2m
+bg1: strength=2
+bg2: strength=3
+
+[phases]
+phi1: label=\phi_1 table=0
+y: label=y table=1
+negx: label=\overline{x} table=2
+phi2: label=\phi_2 table=0,2
+phi3: label=\phi_3 table=2(0),2(2)
+phi4: label=\phi_4 table=0
+phi5: label=\phi_5 table=4(0),4(2)
+phi6: label=\phi_6 table=x
+rec: label=\phi_{rec} table=2(0,2),2(2,0)
