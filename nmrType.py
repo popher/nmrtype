@@ -1,12 +1,12 @@
 #!/usr/bin/python
-from PulseScript import PulseScript
+import PulseScript
+import sys
 #from PulseSequence import PulseSequence
 #from Varian import Varian
 #from Bruker import Bruker
 #from Spinach import Spinach
 
-code = PulseScript()
-seq = code.parse()
+code = PulseScript.parse(sys.argv[1])
 #seq = PulseSequence(code)
 #seq.draw()
 

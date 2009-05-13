@@ -170,12 +170,12 @@ class PulseScript:
 		creates list of anchor groups which themselves contain 
 		list of their anchors
 		"""
-		code = self._code['anchors'].code
+		code = self.anchors.code
+		ps = self.pulse_sequence
 
 		tokens = (label_regex_token,label_regex_token)
-		anchor_group_re = re.compile(r'^@%s(:?(:?,|-+)%s)*$' % tokens)
 
-		new_anchor_group_re = re.compile(r'^@(%s)(:?\[([1-9]\d*)\])$' % anchor_basename_token );
+		anchor_group_re = re.compile(r'^@(%s)(:?\[([1-9]\d*)\])$' % anchor_basename_token );
 		# @a--b,c5,sdfg345
 		# @a,@b1-5,@7
 		# @g1-7
@@ -183,25 +183,19 @@ class PulseScript:
 		at_re = re.compile(r'^@')
 		dash_re = re.compile(r'-+')
 
-		group_list = self._glist
+		group_list = ps.get_anchor_group_list()
 
 		bits = code.split()
 		for bit in bits:
 			orig = bit
 			m = anchor_group_re.match(bit)
-			mn = new_anchor_group_re.match(bit)
 			a_names = []
-			if mn:
+			if m:
 				a_base_name = mn.group(1)
 				a_anchor_count = int(mn.group(3))
 				for i in xrange(1,a_anchor_count+1):
 					a_name = '%s%d' % (a_base_name,i)
 					a_names.append(a_name)
-			elif m:
-				bit = at_re.sub('',bit)
-				bit = dash_re.sub(',',bit)
-				a_names = bit.split(',')
-
 			else:
 				raise ParsingError('could not parse anchor group ' \
 						'definition %s' % bit)
@@ -304,40 +298,7 @@ class PulseScript:
 					raise ParsingError('misformed pulse statement %s in rf channel \'%s\'' \
 										% (bit,ch))
 
-	def _get_anchored_object_list(self,type,name):
-		type_map = {'pulses':('rf_pulse'),
-					'acq':('acq'),
-					'gradients':('pfg','pfg_wide'),
-					'cpd':('rf_wide_pulse'),
-					'phases':('phase')}
-
-		o_list = []
-		for g in self._glist:
-			for a in g.anchor_list:
-				for e in a.events:
-					if e._type in type_map[type] and e.name == name:
-						o_list.append(e)
-		if len(o_list) == 0:
-			raise ParsingError('no %s named %s found in the pulse sequence' % (type,name))
-		return o_list
-
-	def _get_objects(self,type,name):
-		if type == 'delays':
-			return self.get_delays(name)
-		elif type in ('pulses','acq','gradients','cpd'):
-			return self._get_anchored_object_list(type,name)
-		elif type == 'phases':
-			return [self.phase_table[name]]
-		elif type == 'rfchan':
-			return [self._rf_channel_table[name]]
-		elif type == 'pfgchan':
-			return [self._pfg_channel_table[name]]
-		elif type == 'dim':
-			return [self._dim_table[name]]
-		else:
-			raise '_get_objects not implemented for type %s' % type
-
-	def _typecast_value(self,val_input,val_type):
+	def typecast_value(self,val_input,val_type):
 		"""reads string representation of value
 		and converts it to value of prescribed type
 		todo: incorporate input validation here
@@ -400,7 +361,7 @@ class PulseScript:
 				val_list = val_input.split(',')
 				typecasted_val_list = []
 				for v in val_list:
-					typecasted_val = self._typecast_value(v,val_type)
+					typecasted_val = self.typecast_value(v,val_type)
 					typecasted_val_list.append(typecasted_val)
 				if len(typecasted_val_list) == 1:
 					return typecasted_val_list[0]
@@ -412,7 +373,7 @@ class PulseScript:
 			specs = val_type #specs given in a table
 			val_type = specs['type'] #type of value for parameter
 			val_values = specs['values'] #allowed values
-			val_value = self._typecast_value(val_input,val_type)
+			val_value = self.typecast_value(val_input,val_type)
 			tmp_val_list = None
 			if not isinstance(val_value,list):
 				tmp_val_list = [val_value]
@@ -444,7 +405,7 @@ class PulseScript:
 			else:
 				raise ParsingError('%s <-here a name token expected' % bits[1])
 
-	def _parse_variables(self,type,key_table,key_aliases={}):
+	def parse_variables(self,type,key_table,key_aliases={}):
 
 		for key in key_aliases.keys():
 			if key not in key_table.keys():
@@ -476,7 +437,7 @@ class PulseScript:
 					obj.__dict__[key] = var_value 
 					obj.template.__dict__[key] = var_value 
 
-	def _parse_gradient_values(self):
+	def parse_gradient_values(self):
 		pfg = self.pfg_table.values()
 		wpfg = self.pfg_wide_table.values()
 		for p in pfg + wpfg:
@@ -498,19 +459,19 @@ class PulseScript:
 			if max_val > 100:
 				raise ParsingError('absolute value of gradient %s exceeds 100' % p.name)
 
-	def _parse_decorations(self):
+	def parse_decorations(self):
 		dl = self._code['decorations'].list
 		for d in dl:
 			type = d['type']
 			code = d['code']
 			self._decoration_list.append(Decoration(type,code))
 
-	def _init_phases(self):
+	def init_phases(self):
 		phase_names = self._code['phases'].table.keys()
 		for name in phase_names:
 			self._procure_object('phase',name)
 
-	def _attach_phases_to_pulses(self):
+	def attach_phases_to_pulses(self):
 		pulse_table = self.get_named_pulse_table1()
 		acq_table = self.acq_table
 
@@ -531,20 +492,20 @@ class PulseScript:
 		#first parse anchor input
 		#keys ['disp' , 'phases', 'pfg', 'delays', 'acq', 'rf', 'pulses', 'decorations', 'time']
 
-		seq = PulseSequence()
+		self.pulse_sequence = PulseSequence()
 
-		self._parse_anchor_groups() #create list of anchor groups '_glist' & anchors 
-		self._parse_time() #populate _delay_list, set timed and timing delays to anchor groups
-		self._parse_rf()
-		self._parse_pfg()
-		self._parse_dim()
+		self.parse_anchor_groups() #create list of anchor groups '_glist' & anchors 
+		self.parse_time() #populate _delay_list, set timed and timing delays to anchor groups
+		self.parse_rf()
+		self.parse_pfg()
+		self.parse_dim()
 
 		delay_parameters = { 'length':'float', 'label':'str', 'formula':'str',
 					'show_at':'str', 'hide':'bool', 'label_yoffset':'int'}
 		delay_aliases = {'length':['t']}
-		self._parse_variables('delays',delay_parameters,delay_aliases)
+		self.parse_variables('delays',delay_parameters,delay_aliases)
 
-		self._parse_variables('pulses',{'phase':'str',
+		self.parse_variables('pulses',{'phase':'str',
 						'quad':'str',
 						'arrow':'str',
 						'label':'str',
@@ -553,46 +514,46 @@ class PulseScript:
 						'comp':{'type':'str','values':['before','after']} #compensation delay 2*pw/pi
 						})
 
-		self._parse_variables('acq',{'phase':'str',
+		self.parse_variables('acq',{'phase':'str',
 						'type':'str'})
 
-		self._parse_variables('gradients',{'length':'float',
+		self.parse_variables('gradients',{'length':'float',
 						'strength':'float-list',
 						'type':'str',
 						'edge':{'type':'str','values':['center','left','right']},
 						'label':'str'})
-		self._parse_gradient_values()#for echo-antiecho type gradients 
+		self.parse_gradient_values()#for echo-antiecho type gradients 
 									 #(comma separated strength values)
 									 #convert string values to numerical values
 
-		self._parse_variables('cpd',{'label':'str',
+		self.parse_variables('cpd',{'label':'str',
 						'h1':'float',
 						'h2':'float'})
 
-		self._init_phases()
-		self._parse_variables('phases',{'label':'str',
+		self.init_phases()
+		self.parse_variables('phases',{'label':'str',
 						'table':'int-list'})
 
 		#todo remove temp plug (fixing phase arrays)
-		self._attach_phases_to_pulses() #and fix phase arrays
+		self.attach_phases_to_pulses() #and fix phase arrays
 
-		self._parse_variables('rfchan',{'label':'str',
+		self.parse_variables('rfchan',{'label':'str',
 						'nucleus':{'type':'str','values':['C','N','H','P','F']},
 						'hardware':'int'
 						})
-		self._parse_variables('pfgchan',{'label':'str'})
+		self.parse_variables('pfgchan',{'label':'str'})
 
-		self._parse_variables('dim',{'sampling':'function','quad':'function'})
+		self.parse_variables('dim',{'sampling':'function','quad':'function'})
 		
-		self._parse_decorations()#decorations are contained in DecorLineList object
+		self.parse_decorations()#decorations are contained in DecorLineList object
 
-		self._assign_delays_to_channels()#decide at what channel draw delay symbols
-		self._attach_delays_to_anchors()#each delay now gets start_anchor and end_anchor
+		self.assign_delays_to_channels()#decide at what channel draw delay symbols
+		self.attach_delays_to_anchors()#each delay now gets start_anchor and end_anchor
 
-		self._hide_acq_delays()
-		self._copy_template_data_to_objects()#this is a temp plug has to be done before grads
+		self.hide_acq_delays()
+		self.copy_template_data_to_objects()#this is a temp plug has to be done before grads
 
-		return seq
+		return self.pulse_sequence
 
 	def read(self):
 
@@ -642,3 +603,7 @@ class PulseScript:
 						ctable.try_add_code(line)
 					except CodeLineSuccess:
 						pass
+
+def parse(file):
+	code = PulseScript(file)
+	return code
