@@ -2,7 +2,7 @@
 import sys
 import os
 import re
-from PulseSequence import PulseSequence
+from pulsesequence import PulseSequence
 
 label_regex_token = '[a-zA-Z0-9_]+'
 anchor_basename_token = '[a-z]+'
@@ -73,13 +73,13 @@ class ParsingError:
 class PulseScript:
 	"""PulseScript code object
 	"""
-	def __init__(self):
+	def __init__(self,file):
 		"""among other things initializes head anchor group
 		but does not create first delay
 
 		most global drawing parameters entered here
 		"""
-		self.read()
+		self.read(file)
 
 	def validate_anchor_order(self,code):
 		#todo get this done before release
@@ -486,7 +486,7 @@ class PulseScript:
 					raise 'internal error: too many phase objects named %s' % p.phase
 
 	def parse(self):
-		"""main PulseScript parsing funtion
+		"""main PulseScript parsing function
 		calls multiple specialized parsing routines
 		"""
 		#first parse anchor input
@@ -555,7 +555,7 @@ class PulseScript:
 
 		return self.pulse_sequence
 
-	def read(self):
+	def read(self,file):
 
 		#lines for the
 		self.anchors = CodeLine(r'^\s*anchors\s*:(.*)$') #these two are not parametrized
@@ -577,8 +577,8 @@ class PulseScript:
 			section_table[sec] = table
 
 		csection = 'main'
-		lines = sys.stdin.readlines()	
-		for line in lines:
+		f = open(file)
+		for line in f:
 			if not (empty.match(line) or comment.match(line)):
 				sm = section.match(line)
 				if sm:
@@ -603,7 +603,8 @@ class PulseScript:
 						ctable.try_add_code(line)
 					except CodeLineSuccess:
 						pass
+		f.close()
 
 def parse(file):
 	code = PulseScript(file)
-	return code
+	return code.parse()
