@@ -2,7 +2,7 @@
 import sys
 import os
 import re
-from pulsesequence import PulseSequence
+from pom import PulseSequence, POMError
 
 label_regex_token = '[a-zA-Z0-9_]+'
 anchor_basename_token = '[a-z]+'
@@ -15,60 +15,68 @@ PulseScript reads the NMR pulse sequence written in the PulseScript code
 this is the only module that deals with the PulseScript directly
 """
 
-class CodeLineSuccess:
+class AddCodeSuccess:
 	pass
 
-class CodeLine:
+class CodeEntry:
 	regex = None
 	empty = re.compile(r'^\s*$')
 	code = None
 	def __init__(self,regex):
 		self.regex = re.compile(regex)
-
-	def __str__(self):
-		if self.code == None:
-			return ''
-		return self.code
-	def try_add_code(self,code):
-		m = self.regex.match(code)
-		if m:
-			code = m.group(1).strip()
-			if self.code:
-				code = self.code + ' ' + code
-			self.code = code
-			raise CodeLineSuccess()
-
-class CodeLineArray(CodeLine):
-	def __init__(self,regex):
-		CodeLine.__init__(self,regex)
-		self.table = {}
+		self.code_table = {} #array to hold code lines
 		self.item_order = []
+
+		ngroups = self.regex.groups
+		if ngroups == 1:
+			self.type = 'simple'
+		elif ngroups == 2:
+			self.type = 'multi'
+		else:
+			raise 'internal error'
+
 	def __str__(self):
 		out = []
 		for item in self.item_order:
-			code = self.table[item]
-			out.append('%s: %s' % (item,code))
+			out.append(item)
+			lines = self.code_table[item]
+			for line in lines:
+				out.append('line %d, col %d: %s'% (line['lineno'],line['colno'],line['code']))
 		return '\n'.join(out)
-	def try_add_code(self,code):
+
+	def try_add_code(self,code,cline):
 		m = self.regex.match(code)
 		if m:
-			key = None
-			if m.group(1):
-				key = m.group(1).strip()
-				if not key in self.item_order:
-					self.item_order.append(key)
-			code = m.group(2).strip()
-			if self.table.has_key(key):
-				code = self.table[key] + ' ' + code
-			self.table[key] = code
-			raise CodeLineSuccess()
+			if self.type == 'simple':
+				name = '__main__'
+				code = m.group(1)
+				start = m.start(1)
+			else:
+				name = m.group(1)
+				code = m.group(2)
+				start = m.start(2)
+			if name not in self.item_order:
+				self.item_order.append(name)
+				self.code_table[name] = []
+			self.ctable = self.code_table[name]
+			self._add_code(code,cline,start)
+	def add_wrapped_line(self,code,cline):
+		self._add_code(code,cline)
+	def _add_code(self,code,cline,start=0):
+		self.ctable.append({'code':code,'colno':start,'lineno':cline})
+		raise AddCodeSuccess()
+		
 
 class ParsingError:
 	text =  None
-	def __init__(self,text):
-		self.text = blanks_re.sub(' ',text)
+	def __init__(self,line,col,problem,message):
+		self.lineno = line
+		self.colno = col
+		self.problem = problem
+		self.message = message
 	def __str__(self):
-		print 'parsing error - ' , self.text
+		print 'parsing error on line %d, col %d with %s in line\n%s' \
+			% (self.lineno,self.colno,self.problem,self.message)
 
 class PulseScript:
 	"""PulseScript code object
@@ -175,7 +183,7 @@ class PulseScript:
 
 		tokens = (label_regex_token,label_regex_token)
 
-		anchor_group_re = re.compile(r'^@(%s)(:?\[([1-9]\d*)\])$' % anchor_basename_token );
+		anchor_group_re = re.compile(r'^@(%s)(:?\[([1-9]\d*)\])?$' % anchor_basename_token );
 		# @a--b,c5,sdfg345
 		# @a,@b1-5,@7
 		# @g1-7
@@ -183,24 +191,25 @@ class PulseScript:
 		at_re = re.compile(r'^@')
 		dash_re = re.compile(r'-+')
 
-		group_list = ps.get_anchor_group_list()
-
 		bits = code.split()
 		for bit in bits:
 			orig = bit
 			m = anchor_group_re.match(bit)
-			a_names = []
 			if m:
-				a_base_name = mn.group(1)
-				a_anchor_count = int(mn.group(3))
-				for i in xrange(1,a_anchor_count+1):
-					a_name = '%s%d' % (a_base_name,i)
-					a_names.append(a_name)
+				name = m.group(1)
+				if m.group(3) == None:
+					size = 1
+				else:
+					size = int(m.group(3))
+
+				try:
+					ps.append_anchor_group(name,size)
+				except POMError as e:
+					print e.value
+					sys.exit(1)
 			else:
 				raise ParsingError('could not parse anchor group ' \
 						'definition %s' % bit)
-
-			self.create_anchor_group(a_names)
 
 	def parse_pfg(self):
 		code_table = self._code['pfg'].table
@@ -558,51 +567,83 @@ class PulseScript:
 	def read(self,file):
 
 		#lines for the
-		self.anchors = CodeLine(r'^\s*anchors\s*:(.*)$') #these two are not parametrized
-		self.time = CodeLine(r'^\s*time\s*:(.*)$')
-		self.rf = CodeLineArray(r'^\s*rf\s+(%s)\s*:(.*)$' % label_regex_token)#these have name
-		self.pfg = CodeLineArray(r'^\s*pfg\s+(x|y|z|mag)\s*:(.*)$')
+		self.anchors = CodeEntry(r'^\s*anchors\s*:(.*)$') #these two are not parametrized
+		self.time = CodeEntry(r'^\s*time\s*:(.*)$')
+		self.rf = CodeEntry(r'^\s*rf\s+(%s)\s*:(.*)$' % label_regex_token)#these have name
+		self.pfg = CodeEntry(r'^\s*pfg\s+(x|y|z|mag)\s*:(.*)$')
 
 		empty = re.compile(r'^\s*$')
 		comment = re.compile(r'^\s*#.*$')
 		section = re.compile(r'^\[([^]]+)\]\s*$')
+		wrapped = re.compile(r'^\s+\S+')
 
 		sections = ('delays','dimensions','options','rfevents','pfgevents',
 				'rfchan','includes','phases')
 
 		section_table = {}
 		for sec in sections:
-			table = CodeLineArray(r'^\s*(.*)\s*:(.*)$')
+			table = CodeEntry(r'^\s*(.*)\s*:(.*)$')
 			self.__dict__[sec] = table 
 			section_table[sec] = table
 
 		csection = 'main'
 		f = open(file)
+		cline = 0
+
+ 		#if line appears wrapped (i.e. starts with empty space)
+		#make sure that we are not in brand new section
+		#wrapped line can't be the first in section
+		flag_new_section = False
+
 		for line in f:
+			cline = cline + 1
 			if not (empty.match(line) or comment.match(line)):
 				sm = section.match(line)
 				if sm:
 					newsec = sm.group(1)
 					if not section_table.has_key(newsec):
-						raise ParsingError('unknown section \'%s\', expect one of: %s'\
-									% (newsec,', '.join(sections)))
-					csection = newsec	
+						msg = 'unknown section \'%s\', expect one of: %s'\
+									% (newsec,', '.join(sections))
+						raise ParsingError(cline,2,newsec,msg)
+					if csection != newsec:
+						#make sure that new section does not start with wrapped line
+						flag_new_section = True
+						csection = newsec	
+				else:
+					flag_new_section = False
 
 				if csection == 'main':
 					try:
-						self.anchors.try_add_code(line)
-						self.time.try_add_code(line)
-						self.rf.try_add_code(line)
-						self.pfg.try_add_code(line)
-						raise ParsingError('could not recognize code line: %s' % line)
-					except CodeLineSuccess:
+						self.anchors.try_add_code(line,cline)
+						self.time.try_add_code(line,cline)
+						self.rf.try_add_code(line,cline)
+						self.pfg.try_add_code(line,cline)
+						if wrapped.match(line):
+							msg = 'lines in main section cannot start with empty space'
+							raise ParsingError(cline,0,line,msg)
+						#no wrapped lines allowed here
+						raise ParsingError('could not recognize header of code line: %s' % line)
+					except AddCodeSuccess:
 						pass
 				else:
 					ctable = self.__dict__[csection]
 					try:
-						ctable.try_add_code(line)
-					except CodeLineSuccess:
+						ctable.try_add_code(line,cline)
+						if wrapped.match(line):
+							if flag_new_section:
+								msg = 'lines in new section cannot start with empty space'
+								raise ParsingError(cline,0,line,msg)
+							else:
+								ctable.add_wrapped_line(line,cline)
+						#here should be handling of wrapped lines
+					except AddCodeSuccess:
 						pass
+		print self.anchors
+		print self.time
+		print self.rf
+		print self.pfg
+		for section in sections:
+			print self.__dict__[section]
 		f.close()
 
 def parse(file):

@@ -7,7 +7,7 @@ import os
 latex_dir = '/usr/local/texlive/2008/bin/x86_64-linux/'
 IMAGE_DIR = '/var/www/vhosts/default/htdocs/nmrwiki/wiki/images/NMRPulse' #where to put image files
 IMAGE_DIR_URL = 'http://nmrwiki.org/wiki/images/NMRPulse'
-from Numeric import *
+#from Numeric import *
 import copy
 
 #including slash in the end use blank if all is in paths
@@ -17,12 +17,12 @@ import copy
 #IMAGE_DIR_URL = 'http://nmrwiki.org/wiki/images/NMRPulse'
 #sys.path.append('/home/nmrwikio/incoming/Imaging-1.1.6/PIL') #path to Python Imaging Library
 #sys.path.append('/home/nmrwikio/incoming/python-modules/numpy/lib64/python2.3/site-packages') #path to numpy library
-#from numpy import *
+from numpy import *
 
 latex_cmd = latex_dir + 'latex'
 dvipng_cmd = latex_dir + 'dvipng'
 import re
-import Image
+#import Image
 
 label_regex_token = '[a-zA-Z0-9_]+'
 anchor_basename_token = '[a-z]+'
@@ -128,54 +128,11 @@ def parse_param(input):
 		else:
 			raise ParsingError('%s <-here a name token expected' % bits[1])
 
-class CodeLineSuccess:
-	pass
-
-class CodeLine:
-	regex = None
-	empty = re.compile(r'^\s*$')
-	code = None
-	def __init__(self,regex):
-		self.regex = re.compile(regex)
-	def try_add_code(self,code):
-		m = self.regex.match(code)
-		if m:
-			code = m.group(1).strip()
-			if self.code:
-				code = self.code + ' ' + code
-			self.code = code
-			raise CodeLineSuccess()
-
-class DecorLineList(CodeLine):
-	def __init__(self,regex):
-		CodeLine.__init__(self,regex)
-		self.list = []
-	def try_add_code(self,code):
-		m = self.regex.match(code)
-		if m:
-			type = m.group(1).strip()
-			code = m.group(2).strip()
-			self.list.append({'type':type,'code':code})
-			raise CodeLineSuccess()
-
-class CodeLineTable(CodeLine):
-	def __init__(self,regex):
-		CodeLine.__init__(self,regex)
-		self.table = {}
-		self.item_order = []
-	def try_add_code(self,code):
-		m = self.regex.match(code)
-		if m:
-			key = None
-			if m.group(1):
-				key = m.group(1).strip()
-				if not key in self.item_order:
-					self.item_order.append(key)
-			code = m.group(2).strip()
-			if self.table.has_key(key):
-				code = self.table[key] + ' ' + code
-			self.table[key] = code
-			raise CodeLineSuccess()
+class POMError(Exception):
+	def __init__(self,value):
+		self.value = value
+	def __str__(self):
+		print self.value
 
 class ParsingError:
 	text =  None
@@ -1721,6 +1678,9 @@ class PulseSequence:
 		self.image_mode = 'L'
 		self.fg_color = 0
 		self.bg_color = 256
+
+	def append_anchor_group(self,name,size):
+		raise POMError('not implemented!')
 
 	def time(self): #PulseSequence.time()
 		for g in self._glist:

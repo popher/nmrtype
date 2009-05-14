@@ -26,7 +26,8 @@ td22: formula=delta/2
 presat: event=cw@a-b.H
 
 [includes]
-(inept): seq=pfg-inept from=H to=N grad=z phase1=phi1 phase2=y comment="H->N inept"
+(inept): seq=pfg-inept from=H to=N grad=z 
+	phase1=phi1 phase2=y comment="H->N inept"
 (wg): seq=het-pfg-watergate proton=H xnuc=C comment="watergate"
 
 [rfevents]
