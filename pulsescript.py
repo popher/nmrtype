@@ -18,6 +18,57 @@ this is the only module that deals with the PulseScript directly
 class AddCodeSuccess:
 	pass
 
+
+class CodeItem:
+	def __init__(self,key='',match=None,lineno=None,colno=1):
+		self.key = key
+		self.match = match
+		self.lineno = lineno
+		self.colno = colno
+
+	def is_valid(self):
+		if self.match == None:
+			return False
+		return True
+
+	def __str__(self):
+		if self.match == None:	
+			content = 'no content'
+		else:
+			content = self.match.group(0)
+		if self.colno == None:
+			colno = -1
+		else:
+			colno = self.colno
+		if self.lineno == None:
+			lineno = -1
+		else:
+			lineno = self.lineno
+		return 'line: %d col: %d content: %s' % (lineno,colno,content)
+
+class CodeLine:
+	def __init__(self,line,lineno):
+		self.line = line
+		self.lineno = lineno
+
+	def create_code_item(self,regex):
+		match = regex.match(self.line)
+		return CodeItem(lineno=self.lineno,colno=0,match=match)
+
+	def is_whatever(self,regex):
+		whatever = re.compile(regex)
+		if whatever.match(self.line):
+			return True
+		else:
+			return False
+
+	def is_comment(self):
+		return self.is_whatever(r'^\s*#.*$')
+	def is_wrapped(self):
+		return self.is_whatever(r'^\s+\S+')
+	def is_empty(self):
+		return self.is_whatever(r'^\s*$')
+
 class CodeEntry:
 	regex = None
 	empty = re.compile(r'^\s*$')
@@ -38,45 +89,64 @@ class CodeEntry:
 	def __str__(self):
 		out = []
 		for item in self.item_order:
-			out.append(item)
-			lines = self.code_table[item]
-			for line in lines:
-				out.append('line %d, col %d: %s'% (line['lineno'],line['colno'],line['code']))
+			bits = self.code_table[item]
+			for bit in bits:
+				out.append(bit.__str__())
 		return '\n'.join(out)
 
-	def try_add_code(self,code,cline):
-		m = self.regex.match(code)
+	def is_empty(self):
+		if len(self.code_table) == 0:
+			return True
+		return False
+
+	def parse_item(self,regex):
+		pass
+
+	def try_add_code(self,code):
+		m = self.regex.match(code.line)
+		lineno = code.lineno
 		if m:
 			if self.type == 'simple':
 				name = '__main__'
-				code = m.group(1)
-				start = m.start(1)
 			else:
 				name = m.group(1)
-				code = m.group(2)
-				start = m.start(2)
 			if name not in self.item_order:
 				self.item_order.append(name)
 				self.code_table[name] = []
 			self.ctable = self.code_table[name]
-			self._add_code(code,cline,start)
-	def add_wrapped_line(self,code,cline):
-		self._add_code(code,cline)
-	def _add_code(self,code,cline,start=0):
-		self.ctable.append({'code':code,'colno':start,'lineno':cline})
+			self.ctable.append(CodeItem(key=name,match=m,lineno=lineno))
+			raise AddCodeSuccess()
+
+	def extract_code(self,regex):
+		#extract a bit of code from content starting
+		#a given position
+		#if line is exhausted, delete it
+		#if table is exhausted, delete it
+		#return new code item
+		pass
+
+	def add_wrapped_line(self,line):
+		#this is different, there is no matching involved yet
+		self.ctable.append(line.create_code_item(re.compile(r'^.*$')))
 		raise AddCodeSuccess()
 		
 
 class ParsingError:
 	text =  None
-	def __init__(self,line,col,problem,message):
-		self.lineno = line
-		self.colno = col
-		self.problem = problem
+	def __init__(self,message,item):
+		self.item = item 
 		self.message = message
 	def __str__(self):
+		if isinstance(item,CodeLine):
+			colno = 0 
+			problem = item.line
+		else:
+			colno = item.colno
+			problem = item.group(0)
+		lineno = item.lineno
+		msg = self.message
 		print 'parsing error on line %d, col %d with %s in line\n%s' \
-			% (self.lineno,self.colno,self.problem,self.message)
+			% (lineno,colno,problem,msg)
 
 class PulseScript:
 	"""PulseScript code object
@@ -88,6 +158,16 @@ class PulseScript:
 		most global drawing parameters entered here
 		"""
 		self.read(file)
+
+	def __str__(self):
+		out = []
+		out.append(self.anchors.__str__())
+		out.append(self.time.__str__())
+		out.append(self.rf.__str__())
+		out.append(self.pfg.__str__())
+		for section in self.sections:
+			out.append(self.__dict__[section].__str__())
+		return '\n'.join(out)
 
 	def validate_anchor_order(self,code):
 		#todo get this done before release
@@ -178,38 +258,27 @@ class PulseScript:
 		creates list of anchor groups which themselves contain 
 		list of their anchors
 		"""
-		code = self.anchors.code
 		ps = self.pulse_sequence
-
 		tokens = (label_regex_token,label_regex_token)
 
-		anchor_group_re = re.compile(r'^@(%s)(:?\[([1-9]\d*)\])?$' % anchor_basename_token );
-		# @a--b,c5,sdfg345
-		# @a,@b1-5,@7
-		# @g1-7
+		anchor_group_re = re.compile(r'^@(%s)(:?\[([1-9]\d*)\])?$' % anchor_basename_token )
 
-		at_re = re.compile(r'^@')
-		dash_re = re.compile(r'-+')
-
-		bits = code.split()
-		for bit in bits:
-			orig = bit
-			m = anchor_group_re.match(bit)
-			if m:
-				name = m.group(1)
-				if m.group(3) == None:
-					size = 1
-				else:
-					size = int(m.group(3))
-
-				try:
-					ps.append_anchor_group(name,size)
-				except POMError as e:
-					print e.value
-					sys.exit(1)
+		code = iter(self.anchors,anchor_group_re)
+		#infinite loop problem, need to get token, then try to parse it as item
+		while item = code.next_item():
+			if not item.is_valid():
+				raise ParsingError('could not parse',item)
+			name = item.match.group(1)
+			name = m.group(1)
+			if m.group(3) == None:
+				size = 1
 			else:
-				raise ParsingError('could not parse anchor group ' \
-						'definition %s' % bit)
+				size = int(m.group(3))
+			try:
+				ps.append_anchor_group(name,size)
+			except POMError as e:
+				print e.value
+				sys.exit(1)
 
 	def parse_pfg(self):
 		code_table = self._code['pfg'].table
@@ -572,17 +641,18 @@ class PulseScript:
 		self.rf = CodeEntry(r'^\s*rf\s+(%s)\s*:(.*)$' % label_regex_token)#these have name
 		self.pfg = CodeEntry(r'^\s*pfg\s+(x|y|z|mag)\s*:(.*)$')
 
-		empty = re.compile(r'^\s*$')
-		comment = re.compile(r'^\s*#.*$')
-		section = re.compile(r'^\[([^]]+)\]\s*$')
-		wrapped = re.compile(r'^\s+\S+')
 
-		sections = ('delays','dimensions','options','rfevents','pfgevents',
+		section_re = re.compile(r'^\[([^]]+)\]')
+		hdr_re = re.compile(r'^([^:]+):')
+
+		self.sections = ('delays','dimensions','options','rfevents','pfgevents',
 				'rfchan','includes','phases')
+
+		sections = self.sections
 
 		section_table = {}
 		for sec in sections:
-			table = CodeEntry(r'^\s*(.*)\s*:(.*)$')
+			table = CodeEntry(r'^\s*([^:]+)\s*:(.*)$')
 			self.__dict__[sec] = table 
 			section_table[sec] = table
 
@@ -595,57 +665,66 @@ class PulseScript:
 		#wrapped line can't be the first in section
 		flag_new_section = False
 
-		for line in f:
+		for raw_line in f:
+
 			cline = cline + 1
-			if not (empty.match(line) or comment.match(line)):
-				sm = section.match(line)
-				if sm:
-					newsec = sm.group(1)
-					if not section_table.has_key(newsec):
+			line = CodeLine(raw_line,cline)
+
+			if not (line.is_empty() or line.is_comment()):
+
+				section = line.create_code_item(section_re)
+				if section.is_valid():
+					newsec = section.match.group(1)
+					if not newsec in sections:
 						msg = 'unknown section \'%s\', expect one of: %s'\
 									% (newsec,', '.join(sections))
-						raise ParsingError(cline,2,newsec,msg)
+						raise ParsingError(msg,section)
 					if csection != newsec:
 						#make sure that new section does not start with wrapped line
 						flag_new_section = True
 						csection = newsec	
 				else:
-					flag_new_section = False
+					if csection == 'main':
+						try:
+							self.rf.try_add_code(line)
+							self.anchors.try_add_code(line)
+							self.time.try_add_code(line)
+							self.pfg.try_add_code(line)
 
-				if csection == 'main':
-					try:
-						self.anchors.try_add_code(line,cline)
-						self.time.try_add_code(line,cline)
-						self.rf.try_add_code(line,cline)
-						self.pfg.try_add_code(line,cline)
-						if wrapped.match(line):
-							msg = 'lines in main section cannot start with empty space'
-							raise ParsingError(cline,0,line,msg)
-						#no wrapped lines allowed here
-						raise ParsingError('could not recognize header of code line: %s' % line)
-					except AddCodeSuccess:
-						pass
-				else:
-					ctable = self.__dict__[csection]
-					try:
-						ctable.try_add_code(line,cline)
-						if wrapped.match(line):
-							if flag_new_section:
-								msg = 'lines in new section cannot start with empty space'
-								raise ParsingError(cline,0,line,msg)
+							if line.is_wrapped():
+								msg = 'lines in main section cannot start with empty space'
+								raise ParsingError(msg,line)
+							#no wrapped lines allowed here
+
+							hdr = line.create_code_item(hdr_re)
+							if hdr.is_valid():
+								msg = 'could not recognize header'
+								raise ParsingError(msg,hdr)
 							else:
-								ctable.add_wrapped_line(line,cline)
-						#here should be handling of wrapped lines
-					except AddCodeSuccess:
-						pass
-		print self.anchors
-		print self.time
-		print self.rf
-		print self.pfg
-		for section in sections:
-			print self.__dict__[section]
+								raise ParsingError('lind must start with header followed by a colon',line)
+
+						except AddCodeSuccess:
+							pass
+					else:
+						ctable = self.__dict__[csection]
+						try:
+							ctable.try_add_code(line)
+
+							if line.is_wrapped():
+								if flag_new_section:
+									msg = 'lines in new section cannot start with empty space'
+									raise ParsingError(msg,line)
+								else:
+									ctable.add_wrapped_line(line)
+									#raises AddCodeSuccess automatically
+							msg = 'cannot add line to section %s' % csection
+							raise ParsingError(msg,line)
+						except AddCodeSuccess:
+							pass
+					flag_new_section = False
 		f.close()
 
 def parse(file):
 	code = PulseScript(file)
+	print code
 	return code.parse()
