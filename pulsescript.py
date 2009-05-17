@@ -16,13 +16,26 @@ this is the only module that deals with the PulseScript directly
 """
 
 class AddCodeSuccess:
+	"""fake success exception, used in the lexer
+	"""
 	pass
 
 
 class CodeItem:
-	def __init__(self,key='',match=None,lineno=None,colno=1):
-		self.key = key
-		self.match = match
+	"""primary code element class for extracting information from code
+	and for reporting parsing errors back to the user
+	"""
+	def __init__(self,source=line,regex=None,lineno=None,colno=1):
+		"""match is regex match object that matched source of CodeItem
+		lineno - source line
+		colno - source column
+		"""
+		if regex == None:
+			regex = re.compile(r'^.*$')
+
+		self.match = re.match(line)
+		self.context = source 
+		self.regex = regex
 		self.lineno = lineno
 		self.colno = colno
 
@@ -46,16 +59,58 @@ class CodeItem:
 			lineno = self.lineno
 		return 'line: %d col: %d content: %s' % (lineno,colno,content)
 
-class CodeLine:
-	def __init__(self,line,lineno):
-		self.line = line
-		self.lineno = lineno
+	def get_content(self,partno=0):
+		return self.match.group(partno)
 
-	def create_code_item(self,regex):
-		match = regex.match(self.line)
-		return CodeItem(lineno=self.lineno,colno=0,match=match)
+	def get_colno(self,partno=0):
+		"""get column number for content element
+		"""
+		return self.colno + self.match.start(partno)
+	
+	def set_colno(self,colno):
+		self.colno = colno
 
-	def is_whatever(self,regex):
+	def embody(self,regex):
+		#since it's embody, regex must be anchored on both ends
+		return CodeItem(source=self.context,regex=regex,colno=self.colno,lineno=self.lineno)
+
+	def emit(self,regex):
+
+		line = self.get_content()
+		#strip leading space
+	
+		#make code item
+		item = CodeItem(context=self.context,regex=regex,lineno=self.lineno,colno=self.colno)
+		if item.is_valid():
+			#excise new item
+			#fix colno
+
+		return item
+
+		#find matching element, take it out of the line
+		#this weird construct is perlish twoliner $string =~ s/(....)//; return $1;
+		extracted = None  
+		def extract(m):
+			extracted = m
+			return ''
+		(line,n) = self._iter_regex.subn(extract,line,1)
+
+		colno = self.colno
+		lineno = self.lineno
+
+		if n == 0: #no match
+			item = CodeItem(colno=self.colno,lineno=self.lineno) #invalid code item, because match not set
+		else:
+			item = CodeItem(match=extracted,colno=self.colno,lineno=self.lineno)
+			#now fix myself
+			self.colno = self.colno + extracted.end()
+			self.match = re.match(r'^.*$',line)
+
+		#regex here must be anchored to beginning
+		item = CodeItem(regex,line,n,c)
+		return item
+
+	def _is_whatever(self,regex):
 		whatever = re.compile(regex)
 		if whatever.match(self.line):
 			return True
@@ -63,76 +118,119 @@ class CodeLine:
 			return False
 
 	def is_comment(self):
-		return self.is_whatever(r'^\s*#.*$')
+		return self._is_whatever(r'^\s*#.*$')
 	def is_wrapped(self):
-		return self.is_whatever(r'^\s+\S+')
+		return self._is_whatever(r'^\s+\S+')
 	def is_empty(self):
-		return self.is_whatever(r'^\s*$')
+		return self._is_whatever(r'^\s*$')
 
 class CodeEntry:
-	regex = None
-	empty = re.compile(r'^\s*$')
-	code = None
+	"""class for logical blocks of code lines
+	blocks can be simple or composite
+	composite ones have two or more subentries, each one having its
+	own key
+
+	simple or composite depends on regex given to the __init__() function
+	regex can have one (=>simple) or more (=>composite) capture groups
+	"""
 	def __init__(self,regex):
+
+		#construct regex for code entry
+		regex = r'^' + regex + r':(.*)$' #require colon
+
 		self.regex = re.compile(regex)
-		self.code_table = {} #array to hold code lines
-		self.item_order = []
+		self.code_table = {} #table to hold code lines for each subentry
+		self.subentry_order = [] #array to remember order of subentries, e.g. channels and item selectors
+		#item selecors in particular need to be evaluated in correct order during parsing
 
 		ngroups = self.regex.groups
 		if ngroups == 1:
 			self.type = 'simple'
-		elif ngroups == 2:
-			self.type = 'multi'
 		else:
-			raise 'internal error'
+			self.type = 'composite'
 
 	def __str__(self):
 		out = []
-		for item in self.item_order:
-			bits = self.code_table[item]
+		for subentry in self.subentry_order:
+			bits = self.code_table[subentry]
 			for bit in bits:
 				out.append(bit.__str__())
 		return '\n'.join(out)
 
-	def is_empty(self):
-		if len(self.code_table) == 0:
-			return True
-		return False
+	def code_items(self,regex=None):
+		"""interface to iterating parser
+		"""
+		return self.__iter__(regex)
 
-	def parse_item(self,regex):
-		pass
+	def __iter__(self,regex):
+		import copy
+		#prep disposable copy for parsing
+		self._iter_code_table = copy.deepcopy(self.code_table)
+		self._iter_subentries = copy.deepcopy(self.subentry_order)
+		self._iter_regex = regex
+		return self
+
+	def emit(self,regex):
+		return self.next(regex)
+
+	def next(self,regex=None):
+		"""extracts next item matching regex passed to the iter object
+		"""
+		#done when all subentries are processed
+		if len(self._iter_subentries) == 0:
+			raise StopIteration
+
+		#get the CodeItem from current subentry 
+		csubentry = self._iter_subentries[0]
+		carray = self._iter_code_table[csubentry]
+		citem = carray[0] # <--- this is it
+
+		if regex != None:
+			item_regex = regex
+		else:
+			item_regex = self._iter_regex
+
+		item = citem.emit(item_regex)
+
+
+		#dicard empty elements
+		if carray[0].is_empty():
+			carray.pop(0)
+		if len(carray) == 0:
+			self._iter_subentries.pop(0)
+
 
 	def try_add_code(self,code):
-		m = self.regex.match(code.line)
-		lineno = code.lineno
-		if m:
-			if self.type == 'simple':
-				name = '__main__'
-			else:
-				name = m.group(1)
-			if name not in self.item_order:
-				self.item_order.append(name)
-				self.code_table[name] = []
-			self.ctable = self.code_table[name]
-			self.ctable.append(CodeItem(key=name,match=m,lineno=lineno))
-			raise AddCodeSuccess()
 
-	def extract_code(self,regex):
-		#extract a bit of code from content starting
-		#a given position
-		#if line is exhausted, delete it
-		#if table is exhausted, delete it
-		#return new code item
-		pass
+		#strip the header, record column 
+		#number in the resulting item
+		#save header key if exists as subentry name
+
+		newitem = code.embody(self.regex)
+		if newitem.is_valid():
+			if self.type == 'simple':
+				subentry_name = '__main__'
+			else:
+				subentry_name = newitem.get_content(1)
+
+			if subentry_name not in self.subentry_order:
+				self.subentry_order.append(subentry_name)
+				self.code_table[subentry_name] = []
+
+			self.ctable = self.code_table[subentry_name]
+			self.ctable.append(newitem)
+			raise AddCodeSuccess()
 
 	def add_wrapped_line(self,line):
 		#this is different, there is no matching involved yet
-		self.ctable.append(line.create_code_item(re.compile(r'^.*$')))
+		self.ctable.append(line.create_code_item())
 		raise AddCodeSuccess()
+
+		
 		
 
 class ParsingError:
-	text =  None
+	#todo: remember to highlight remaining string from colno and up if item is invalid
 	def __init__(self,message,item):
 		self.item = item 
 		self.message = message
@@ -142,7 +240,7 @@ class ParsingError:
 			problem = item.line
 		else:
 			colno = item.colno
-			problem = item.group(0)
+			problem = item.get_content()
 		lineno = item.lineno
 		msg = self.message
 		print 'parsing error on line %d, col %d with %s in line\n%s' \
@@ -261,19 +359,18 @@ class PulseScript:
 		ps = self.pulse_sequence
 		tokens = (label_regex_token,label_regex_token)
 
-		anchor_group_re = re.compile(r'^@(%s)(:?\[([1-9]\d*)\])?$' % anchor_basename_token )
+		anchor_group_re = re.compile(r'@(%s)(:?\[([1-9]\d*)\])?' % anchor_basename_token )
 
-		code = iter(self.anchors,anchor_group_re)
+		code = self.anchors
 		#infinite loop problem, need to get token, then try to parse it as item
-		while item = code.next_item():
+		for item in code.code_items(anchor_group_re):
 			if not item.is_valid():
 				raise ParsingError('could not parse',item)
-			name = item.match.group(1)
-			name = m.group(1)
+			name = item.get_content(1)
 			if m.group(3) == None:
 				size = 1
 			else:
-				size = int(m.group(3))
+				size = int(item.get_content(3))
 			try:
 				ps.append_anchor_group(name,size)
 			except POMError as e:
@@ -635,15 +732,15 @@ class PulseScript:
 
 	def read(self,file):
 
-		#lines for the
-		self.anchors = CodeEntry(r'^\s*anchors\s*:(.*)$') #these two are not parametrized
-		self.time = CodeEntry(r'^\s*time\s*:(.*)$')
-		self.rf = CodeEntry(r'^\s*rf\s+(%s)\s*:(.*)$' % label_regex_token)#these have name
-		self.pfg = CodeEntry(r'^\s*pfg\s+(x|y|z|mag)\s*:(.*)$')
+		#regexes here define headers
+		self.anchors = CodeEntry('anchors') #these two are not parametrized
+		self.time = CodeEntry('time')
+		self.rf = CodeEntry(r'rf\s+(%s)' % label_regex_token)#these have names
+		self.pfg = CodeEntry(r'pfg\s+(x|y|z|mag)')
 
 
 		section_re = re.compile(r'^\[([^]]+)\]')
-		hdr_re = re.compile(r'^([^:]+):')
+		hdr_re = re.compile(r'^([^:]+)')
 
 		self.sections = ('delays','dimensions','options','rfevents','pfgevents',
 				'rfchan','includes','phases')
@@ -652,7 +749,7 @@ class PulseScript:
 
 		section_table = {}
 		for sec in sections:
-			table = CodeEntry(r'^\s*([^:]+)\s*:(.*)$')
+			table = CodeEntry(r'([^:]+)')
 			self.__dict__[sec] = table 
 			section_table[sec] = table
 
@@ -668,21 +765,21 @@ class PulseScript:
 		for raw_line in f:
 
 			cline = cline + 1
-			line = CodeLine(raw_line,cline)
+			line = CodeItem(raw_line,cline)
 
 			if not (line.is_empty() or line.is_comment()):
 
-				section = line.create_code_item(section_re)
+				section = line.embody(section_re)
 				if section.is_valid():
-					newsec = section.match.group(1)
-					if not newsec in sections:
+					newsecname = section.get_content(1)
+					if not newsecname in sections:
 						msg = 'unknown section \'%s\', expect one of: %s'\
-									% (newsec,', '.join(sections))
+									% (newsecname,', '.join(sections))
 						raise ParsingError(msg,section)
-					if csection != newsec:
+					if csection != newsecname:
 						#make sure that new section does not start with wrapped line
 						flag_new_section = True
-						csection = newsec	
+						csection = newsecname
 				else:
 					if csection == 'main':
 						try:
@@ -696,7 +793,7 @@ class PulseScript:
 								raise ParsingError(msg,line)
 							#no wrapped lines allowed here
 
-							hdr = line.create_code_item(hdr_re)
+							hdr = line.emit(hdr_re)
 							if hdr.is_valid():
 								msg = 'could not recognize header'
 								raise ParsingError(msg,hdr)
