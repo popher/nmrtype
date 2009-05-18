@@ -8,7 +8,6 @@ label_regex_token = '[a-zA-Z0-9_]+'
 anchor_basename_token = '[a-z]+'
 element_name_regex_token = '[a-zA-Z0-9]+'
 expression_regex_token = '[\^\_\{\}a-zA-Z0-9\*\/\(\)]+'
-blanks_re = re.compile(r'\s\s+')
 
 """@package docstring
 PulseScript reads the NMR pulse sequence written in the PulseScript code
@@ -25,17 +24,20 @@ class CodeItem:
 	"""primary code element class for extracting information from code
 	and for reporting parsing errors back to the user
 	"""
-	def __init__(self,source=line,regex=None,lineno=None,colno=1):
+	def __init__(self,source='',regex=None,lineno=None,colno=1):
 		"""match is regex match object that matched source of CodeItem
 		lineno - source line
 		colno - source column
 		"""
 		if regex == None:
-			regex = re.compile(r'^.*$')
+			regex = r'^.*$'
 
-		self.match = re.match(line)
-		self.context = source 
-		self.regex = regex
+		if lineno == None:
+			raise 'internal error: lineno is a mandatory parameter'
+
+		self.regex = re.compile(regex)
+		self.match = self.regex.match(source)
+		self.source = source 
 		self.lineno = lineno
 		self.colno = colno
 
@@ -60,59 +62,69 @@ class CodeItem:
 		return 'line: %d col: %d content: %s' % (lineno,colno,content)
 
 	def get_content(self,partno=0):
+		if not self.is_valid():
+			return '' 
 		return self.match.group(partno)
+
+	def get_subitem(self,partno=0):
+		source = self.get_content(partno)
+		colno = self.get_colno(partno)
+		lineno = self.lineno
+		return CodeItem(source=source,colno=colno,lineno=lineno)
+
+	def get_lineno(self):
+		return self.lineno
 
 	def get_colno(self,partno=0):
 		"""get column number for content element
 		"""
-		return self.colno + self.match.start(partno)
+		if self.is_valid():
+			offset = self.match.start(partno)
+		else:
+			offset = 0
+		return self.colno + offset
+
+	def get_regex(self):
+		return self.regex
 	
 	def set_colno(self,colno):
 		self.colno = colno
 
-	def embody(self,regex):
-		#since it's embody, regex must be anchored on both ends
-		return CodeItem(source=self.context,regex=regex,colno=self.colno,lineno=self.lineno)
+	def deliver(self,regex='^.*$'):
+		"""create a new CodeItem based on current and a new regular expression
+		"""
+		return CodeItem(source=self.source,regex=regex,colno=self.colno,lineno=self.lineno)
 
-	def emit(self,regex):
+	def emit(self,regex):#CodeItem.emit()
+		"""emit a new CodeItem, matching regex, anchored at the beginning
+		before emission, leading space is cut out, 
+		after emission the emitted contend is cut out
 
-		line = self.get_content()
-		#strip leading space
+		if nothing matches regex, invalid item is emitted
+		and current item stays untouched
+
+		parameter regex - plain string regex, not compiled
+		"""
+		#validate regex
+		if regex[0] == '^':
+			raise 'internal error, regex must not be start-anchored'
+		aregex = '^\s*' + regex
 	
 		#make code item
-		item = CodeItem(context=self.context,regex=regex,lineno=self.lineno,colno=self.colno)
+		item = self.deliver(aregex)
+
 		if item.is_valid():
 			#excise new item
-			#fix colno
+			regex = item.get_regex()
+			self.source = regex.sub('',self.source,1)
+			self.colno = self.colno + len(item.get_content())
+			item = item.deliver(regex) #here empty space will be disregarded
 
-		return item
-
-		#find matching element, take it out of the line
-		#this weird construct is perlish twoliner $string =~ s/(....)//; return $1;
-		extracted = None  
-		def extract(m):
-			extracted = m
-			return ''
-		(line,n) = self._iter_regex.subn(extract,line,1)
-
-		colno = self.colno
-		lineno = self.lineno
-
-		if n == 0: #no match
-			item = CodeItem(colno=self.colno,lineno=self.lineno) #invalid code item, because match not set
-		else:
-			item = CodeItem(match=extracted,colno=self.colno,lineno=self.lineno)
-			#now fix myself
-			self.colno = self.colno + extracted.end()
-			self.match = re.match(r'^.*$',line)
-
-		#regex here must be anchored to beginning
-		item = CodeItem(regex,line,n,c)
 		return item
 
 	def _is_whatever(self,regex):
 		whatever = re.compile(regex)
-		if whatever.match(self.line):
+		if whatever.match(self.source):
 			return True
 		else:
 			return False
@@ -160,14 +172,21 @@ class CodeEntry:
 	def code_items(self,regex=None):
 		"""interface to iterating parser
 		"""
-		return self.__iter__(regex)
+		self._iter_regex = regex
+		return self.__iter__()
 
-	def __iter__(self,regex):
+	def __iter__(self):
 		import copy
 		#prep disposable copy for parsing
-		self._iter_code_table = copy.deepcopy(self.code_table)
+		self._iter_code_table = {}
+		for subentry in self.subentry_order:
+			carray = self.code_table[subentry]
+			newcarray = []
+			for item in carray:
+				newitem = item.deliver()
+				newcarray.append(item)
+			self._iter_code_table[subentry] = carray
 		self._iter_subentries = copy.deepcopy(self.subentry_order)
-		self._iter_regex = regex
 		return self
 
 	def emit(self,regex):
@@ -192,13 +211,22 @@ class CodeEntry:
 
 		item = citem.emit(item_regex)
 
-
 		#dicard empty elements
 		if carray[0].is_empty():
 			carray.pop(0)
 		if len(carray) == 0:
 			self._iter_subentries.pop(0)
 
+		return item
+
+	def lex_code(self,code):
+		if self.type == 'simple':
+			subentry_name = '__main__'
+			subentry_code = code.get_subitem(1)	
+		else:
+			subentry_name = code.get_content(1)
+			subentry_code = code.get_subitem(2) 
+		return (subentry_name,subentry_code)
 
 	def try_add_code(self,code):
 
@@ -206,44 +234,32 @@ class CodeEntry:
 		#number in the resulting item
 		#save header key if exists as subentry name
 
-		newitem = code.embody(self.regex)
-		if newitem.is_valid():
-			if self.type == 'simple':
-				subentry_name = '__main__'
-			else:
-				subentry_name = newitem.get_content(1)
+		entry_code = code.deliver(self.regex)
+		if entry_code.is_valid():
+			(subentry_name,code) = self.lex_code(entry_code)
 
 			if subentry_name not in self.subentry_order:
 				self.subentry_order.append(subentry_name)
 				self.code_table[subentry_name] = []
 
 			self.ctable = self.code_table[subentry_name]
-			self.ctable.append(newitem)
+			self.add_code(code)
 			raise AddCodeSuccess()
 
-	def add_wrapped_line(self,line):
-		#this is different, there is no matching involved yet
-		self.ctable.append(line.create_code_item())
-		raise AddCodeSuccess()
+	def add_code(self,code):
+		self.ctable.append(code)
 
-		
-		
-
-class ParsingError:
+class ParsingError(Exception):
 	#todo: remember to highlight remaining string from colno and up if item is invalid
 	def __init__(self,message,item):
 		self.item = item 
-		self.message = message
+		self.msg = message
 	def __str__(self):
-		if isinstance(item,CodeLine):
-			colno = 0 
-			problem = item.line
-		else:
-			colno = item.colno
-			problem = item.get_content()
-		lineno = item.lineno
-		msg = self.message
-		print 'parsing error on line %d, col %d with %s in line\n%s' \
+		colno = self.item.get_colno()
+		problem = self.item.get_content()
+		lineno = self.item.get_lineno()
+		msg = self.msg
+		return 'parsing error on line %d, col %d with %s in line\n%s' \
 			% (lineno,colno,problem,msg)
 
 class PulseScript:
@@ -282,60 +298,65 @@ class PulseScript:
 		"""
 		#first lex the time line
 		#sequence must start with delay and end with anchor
-		code = self._code['time'].code
-		group_list = self._glist
+		code = self.time
+		ps = self.pulse_sequence
 
 		self._validate_anchor_order(code)
 
 		t = label_regex_token
-		anchor_re = re.compile(r'^@(%s)((,|-+)(%s))?$' % (t,t))
-		delay_re = re.compile(r'^%s$' % t)
+		anchor_re = r'@(%s)((-+)(%s))?$' % (t,t)
+		delay_re = r'%s' % t
 
-		bits = code.split()
-		if anchor_re.match(bits[0]):
-			raise ParsingError('first item in the time line must be delay, %s found' % bits[0])
-		if not anchor_re.match(bits[-1]):
-			raise ParsingError('last item in the time line must be anchor, %s found' % bits[0])
+		items = code.code_items(r'\s+')
 
-		items = []
-		#prev item name and type
-		pname = 'OriginAnchor'
-		ptype = 'anchor' #thats the implied zero time anchor
-		#group bits into anchors and delays
-		#delays and anchors must alternate
-		for bit in bits:
-			am = anchor_re.match(bit)
-			dm = delay_re.match(bit)
-			if am:
-				a1_name = am.group(1)
-				a2_name = am.group(4)
-				if ptype == 'anchor':
-					raise ParsingError('two anchors %s and %s found in a row. '\
-										% (pname,bit) \
-										+'Anchors and delays must alternate.')
-				item = None
-				if a2_name:
-					item = {'type':'double-anchor','name':a1_name,'name2':a2_name}
-				else:
-					item = {'type':'anchor','name':a1_name}
-
-				items.append(item)
-				ptype = 'anchor'
-			elif dm:
-				if ptype == 'delay':
-					raise ParsingError('two delays %s and %s found in a row. '\
-									% (pname,bit) \
-								+'Delays must alternate with anchors.')
-				items.append({'type':'delay','name':bit})
-				ptype = 'delay'
-			else:
-				raise ParsingError('did not recognize entry %s either delay symbol ' % bit \
-									+ 'or two-anchor group expected: e.g. @a,b')
-			pname = bit
-			
-		c_group = group_list[0]
+		ptype = None
+		time_items = []
 		for item in items:
+			anchor_item = item.deliver(anchor_re) 
+			delay_item = item.deliver(delay_re)
+			if anchor_item.is_valid():
+				ctype = 'anchor'
+			elif delay_item.is_valid():
+				ctype = 'delay'
+			else:
+				raise POMError('could not recognize timing item',item)
+
+			if ptype == ctype:
+				if ctype == 'anchor':
+					expected = 'delay'
+					citem = anchor_item
+				else:
+					expected = 'anchor'
+				msg = 'item expected to be %s' % expected
+				raise POMError(msg,citem)
+
+			#insert dummy origin anchor if necessary
+			if ptype == None:
+				if ctype == 'delay': #first anchor is implicit
+					aname = 'OriginAnchor'
+					time_items.append({'type':'anchor','name':aname})
+					ps.insert_anchor_group(aname,1,0) #insert dummy
+
+			if ctype == 'anchor':
+				a1_name = anchor_item.get_content(1)
+				a2_name = anchor_item.get_content(4)
+				anchor_item = None
+				if a2_name:
+					anchor_item = {'type':'double-anchor','name':a1_name,'name2':a2_name}
+				else:
+					anchor_item = {'type':'anchor','name':a1_name}
+				time_items.append(anchor_item)
+			else:
+				time_items.append({'type':'delay','name':delay_item.get_content()})
+
+			ptype = ctype
+
+		#HERE
+		#also think about changing anchor model so that names are not explicit
+		c_group = self._glist[0]
+		for item in time_items:
 			if item['type'] == 'delay':
+				ps.append_delay(item['name'])
 				d = Delay(item['name'])
 				self._delay_list.append(d)
 				c_group.post_delay = d 
@@ -359,23 +380,24 @@ class PulseScript:
 		ps = self.pulse_sequence
 		tokens = (label_regex_token,label_regex_token)
 
-		anchor_group_re = re.compile(r'@(%s)(:?\[([1-9]\d*)\])?' % anchor_basename_token )
+		anchor_group_re = r'@(%s)(:?\[([1-9]\d*)\])?' % anchor_basename_token
 
 		code = self.anchors
 		#infinite loop problem, need to get token, then try to parse it as item
-		for item in code.code_items(anchor_group_re):
+		items = code.code_items(anchor_group_re)
+		#sys.exit()
+		for item in items:
 			if not item.is_valid():
 				raise ParsingError('could not parse',item)
 			name = item.get_content(1)
-			if m.group(3) == None:
+			if item.get_content(3) == None:
 				size = 1
 			else:
 				size = int(item.get_content(3))
 			try:
 				ps.append_anchor_group(name,size)
 			except POMError as e:
-				print e.value
-				sys.exit(1)
+				raise ParsingError(e.value,item)
 
 	def parse_pfg(self):
 		code_table = self._code['pfg'].table
@@ -738,9 +760,8 @@ class PulseScript:
 		self.rf = CodeEntry(r'rf\s+(%s)' % label_regex_token)#these have names
 		self.pfg = CodeEntry(r'pfg\s+(x|y|z|mag)')
 
-
-		section_re = re.compile(r'^\[([^]]+)\]')
-		hdr_re = re.compile(r'^([^:]+)')
+		section_re = r'^\[([^]]+)\]$'
+		hdr_re = r'^([^:]+)'
 
 		self.sections = ('delays','dimensions','options','rfevents','pfgevents',
 				'rfchan','includes','phases')
@@ -765,11 +786,11 @@ class PulseScript:
 		for raw_line in f:
 
 			cline = cline + 1
-			line = CodeItem(raw_line,cline)
+			line = CodeItem(source=raw_line,lineno=cline)
 
 			if not (line.is_empty() or line.is_comment()):
 
-				section = line.embody(section_re)
+				section = line.deliver(section_re)
 				if section.is_valid():
 					newsecname = section.get_content(1)
 					if not newsecname in sections:
@@ -798,8 +819,7 @@ class PulseScript:
 								msg = 'could not recognize header'
 								raise ParsingError(msg,hdr)
 							else:
-								raise ParsingError('lind must start with header followed by a colon',line)
-
+								raise ParsingError('line must start with a header followed by a colon',line)
 						except AddCodeSuccess:
 							pass
 					else:
@@ -812,8 +832,9 @@ class PulseScript:
 									msg = 'lines in new section cannot start with empty space'
 									raise ParsingError(msg,line)
 								else:
-									ctable.add_wrapped_line(line)
-									#raises AddCodeSuccess automatically
+									ctable.add_code(line)
+									raise AddCodeSuccess
+
 							msg = 'cannot add line to section %s' % csection
 							raise ParsingError(msg,line)
 						except AddCodeSuccess:
@@ -823,5 +844,7 @@ class PulseScript:
 
 def parse(file):
 	code = PulseScript(file)
-	print code
-	return code.parse()
+	try:
+		code.parse()
+	except ParsingError as e:
+		print e

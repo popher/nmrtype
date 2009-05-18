@@ -785,6 +785,9 @@ class AnchorGroup:
 			c_index = c_index + 1
 			prev_a = a
 
+	def append_anchor(self,a):
+		self.anchor_list.append(a)
+
 	def get_anchor(self,a_name):
 		for a in self.anchor_list:
 			if a.name == a_name:
@@ -1680,7 +1683,19 @@ class PulseSequence:
 		self.bg_color = 256
 
 	def append_anchor_group(self,name,size):
-		raise POMError('not implemented!')
+		self.insert_anchor_group(name,size)
+
+	def insert_anchor_group(self,name,size,pos=-1)
+		"""creates new anchor group, populates it with anchors 
+		"""
+		g = AnchorGroup()
+		#add g.pulse_sequence here?
+		self._glist.insert(g,pos)
+		for i in range(size):
+			a_name = '%s%d' % (name,i+1)
+			a = Anchor(a_name)
+			a.group = g
+			g.append_anchor(a)
 
 	def time(self): #PulseSequence.time()
 		for g in self._glist:
@@ -1943,19 +1958,6 @@ class PulseSequence:
 		self._image.save('draft%d.png' % n)
 		self._draft_image_no = n + 1
 
-	def create_anchor_group(self,a_names = []):
-		"""creates new anchor group, populates it 
-		with anchors named as in a_names array
-		returns newly created anchor group
-		"""
-		g = AnchorGroup()
-		self._glist.append(g)
-		for a_name in a_names:
-			a = Anchor(a_name)
-			a.group = g
-			g.anchor_list.append(a)
-		return g
-
 	def get_anchor_groups(self):
 		"""returns list of anchor groups
 		"""
@@ -2094,49 +2096,6 @@ class PulseSequence:
 					c_group.set_timing_anchor(a2_name)
 				else:
 					c_group.set_timing_anchor(a1_name)
-
-	def _parse_anchor_groups(self):
-		"""parses text of "anchors" line
-		creates list of anchor groups which themselves contain 
-		list of their anchors
-		"""
-		code = self._code['anchors'].code
-
-		tokens = (label_regex_token,label_regex_token)
-		anchor_group_re = re.compile(r'^@%s(:?(:?,|-+)%s)*$' % tokens)
-
-		new_anchor_group_re = re.compile(r'^@(%s)(:?\[([1-9]\d*)\])$' % anchor_basename_token );
-		# @a--b,c5,sdfg345
-		# @a,@b1-5,@7
-		# @g1-7
-
-		at_re = re.compile(r'^@')
-		dash_re = re.compile(r'-+')
-
-		group_list = self._glist
-
-		bits = code.split()
-		for bit in bits:
-			orig = bit
-			m = anchor_group_re.match(bit)
-			mn = new_anchor_group_re.match(bit)
-			a_names = []
-			if mn:
-				a_base_name = mn.group(1)
-				a_anchor_count = int(mn.group(3))
-				for i in xrange(1,a_anchor_count+1):
-					a_name = '%s%d' % (a_base_name,i)
-					a_names.append(a_name)
-			elif m:
-				bit = at_re.sub('',bit)
-				bit = dash_re.sub(',',bit)
-				a_names = bit.split(',')
-
-			else:
-				raise ParsingError('could not parse anchor group ' \
-						'definition %s' % bit)
-
-			self.create_anchor_group(a_names)
 
 	def _parse_pfg(self):
 		code_table = self._code['pfg'].table

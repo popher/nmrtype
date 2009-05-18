@@ -1,4 +1,4 @@
-anchors:  @a     @b           @c      @d[4]            @e[2]     @f3       @g6                    @h      @i[2]    @j[5]             @k[3]     @l[5]                     @m[4]      @n[3]
+anchors:  @a     @b           @c      @d[4]            @e[2]     @f[3]     @g[6]                  @h      @i[2]    @j[5]             @k[3]     @l[5]                     @m[4]      @n[3]
 time:     @a rlx @b           @c tauN @d1-------d4 eta @e1  t12  @f2  t12  @g2----------g5  tauN2 @h td21 @i1 td22 @j1------j4 t22   @k2 t22   @l2--------------l5 delta @m1-m4  aq @n1
 rf H:   cw@a-----@b    (inept)@c------@d1 s90@d2              180@f2           s90@g4 90@g5    180@h             90@j1 s90@j2                      s90@l4  (wg)@l5--------m1 acq@m4-@n1
 rf C:                                                                                                  180@i1            90@j4               90@l2         (wg)@l5--------m1 cpd@m2-@n3
