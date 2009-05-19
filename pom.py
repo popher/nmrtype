@@ -1,6 +1,7 @@
 #!/usr/bin/python
 import sys
 import os
+import util
 
 #including slash in the end use blank if all is in paths
 #settings for 1&1
@@ -129,10 +130,11 @@ def parse_param(input):
 			raise ParsingError('%s <-here a name token expected' % bits[1])
 
 class POMError(Exception):
-	def __init__(self,value):
-		self.value = value
+	def __init__(self,msg,item):
+		self.msg = msg 
+		self.item = item
 	def __str__(self):
-		print self.value
+		return self.msg + self.item.source
 
 class ParsingError:
 	text =  None
@@ -1650,21 +1652,13 @@ class PulseSequence:
 		for ot in self._object_type_list:
 			self.__dict__[ot + '_table'] = {} #???is this duplication of below code?
 
-		self._rf_channel_table = {}
-		self._pfg_channel_table = {}
-		self._dim_table = {} #table to contain information about indirect dimensions (maybe all?)
-		self._dim_order = [] 
-		self._delay_list = [] 
-		self._decoration_list = []
 		self._draft_image_no = 0
 
-		head_group = AnchorGroup()#special start anchor group with null name and offset
-		a = Anchor(None) #special unnamed anchor
-		head_group.timed_anchor = a      #anchor with interval before
-		head_group.timing_anchor = a     #anchor with interval after
-		head_group.anchor_list.append(a)
-		head_group.xcoor = 0
-		self._glist = [head_group]
+		self.anchor_groups = util.HashableArray()
+		self.dimensions = util.HashableArray()
+		self.pfg_channels = util.HashableArray()
+		self.rf_channels = util.HashableArray()
+		self.delays = []
 
 		#some constant drawing parameters
 		self.channel_drawing_height = 35 
@@ -1685,12 +1679,12 @@ class PulseSequence:
 	def append_anchor_group(self,name,size):
 		self.insert_anchor_group(name,size)
 
-	def insert_anchor_group(self,name,size,pos=-1)
+	def insert_anchor_group(self,name,size,pos=-1):
 		"""creates new anchor group, populates it with anchors 
 		"""
 		g = AnchorGroup()
 		#add g.pulse_sequence here?
-		self._glist.insert(g,pos)
+		self.anchor_groups.put(key=name,value=g)
 		for i in range(size):
 			a_name = '%s%d' % (name,i+1)
 			a = Anchor(a_name)

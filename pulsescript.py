@@ -35,8 +35,9 @@ class CodeItem:
 		if lineno == None:
 			raise 'internal error: lineno is a mandatory parameter'
 
-		self.regex = re.compile(regex)
-		self.match = self.regex.match(source)
+		self.regex = regex
+		self.re = re.compile(regex)
+		self.match = self.re.search(source)
 		self.source = source 
 		self.lineno = lineno
 		self.colno = colno
@@ -47,19 +48,16 @@ class CodeItem:
 		return True
 
 	def __str__(self):
-		if self.match == None:	
-			content = 'no content'
-		else:
-			content = self.match.group(0)
+		content = self.get_content()
 		if self.colno == None:
 			colno = -1
 		else:
-			colno = self.colno
+			colno = self.get_colno()
 		if self.lineno == None:
 			lineno = -1
 		else:
 			lineno = self.lineno
-		return 'line: %d col: %d content: %s' % (lineno,colno,content)
+		return 'line: %d col: %d content: \'%s\'' % (lineno,colno,content)
 
 	def get_content(self,partno=0):
 		if not self.is_valid():
@@ -92,8 +90,14 @@ class CodeItem:
 
 	def deliver(self,regex='^.*$'):
 		"""create a new CodeItem based on current and a new regular expression
+
+		no regex means deliver the whole thing
 		"""
-		return CodeItem(source=self.source,regex=regex,colno=self.colno,lineno=self.lineno)
+		source = self.get_content()
+		colno = self.get_colno()
+		lineno = self.lineno
+		newitem = CodeItem(source=source,regex=regex,colno=colno,lineno=lineno)
+		return newitem
 
 	def emit(self,regex):#CodeItem.emit()
 		"""emit a new CodeItem, matching regex, anchored at the beginning
@@ -112,12 +116,16 @@ class CodeItem:
 	
 		#make code item
 		item = self.deliver(aregex)
-
 		if item.is_valid():
 			#excise new item
-			regex = item.get_regex()
-			self.source = regex.sub('',self.source,1)
-			self.colno = self.colno + len(item.get_content())
+			icontent = item.get_content()
+			tmp = self.source.replace(icontent,'',1)	
+			if tmp == self.source and len(icontent) > 0:
+				raise 'cant strip prefix!!!'
+
+			lineno = self.lineno
+			colno = self.get_colno() + len(icontent)
+			self.__init__(source=tmp,lineno=lineno,colno=colno)
 			item = item.deliver(regex) #here empty space will be disregarded
 
 		return item
@@ -150,12 +158,13 @@ class CodeEntry:
 		#construct regex for code entry
 		regex = r'^' + regex + r':(.*)$' #require colon
 
-		self.regex = re.compile(regex)
+		self.regex = regex
+		self.re = re.compile(regex)
 		self.code_table = {} #table to hold code lines for each subentry
 		self.subentry_order = [] #array to remember order of subentries, e.g. channels and item selectors
 		#item selecors in particular need to be evaluated in correct order during parsing
 
-		ngroups = self.regex.groups
+		ngroups = self.re.groups
 		if ngroups == 1:
 			self.type = 'simple'
 		else:
@@ -283,9 +292,9 @@ class PulseScript:
 			out.append(self.__dict__[section].__str__())
 		return '\n'.join(out)
 
-	def validate_anchor_order(self,code):
+	def validate_anchor_order(self,anchors):
 		#todo get this done before release
-		pass
+		raise 'not here yet'
 
 	def parse_time(self):
 		"""parses code of "time" line
@@ -301,17 +310,19 @@ class PulseScript:
 		code = self.time
 		ps = self.pulse_sequence
 
-		self._validate_anchor_order(code)
-
 		t = label_regex_token
 		anchor_re = r'@(%s)((-+)(%s))?$' % (t,t)
 		delay_re = r'%s' % t
 
-		items = code.code_items(r'\s+')
+		items = code.code_items(r'\S+')
 
 		ptype = None
 		time_items = []
+		used_anchors = []
 		for item in items:
+			print item
+			sys.exit()
+
 			anchor_item = item.deliver(anchor_re) 
 			delay_item = item.deliver(delay_re)
 			if anchor_item.is_valid():
@@ -341,8 +352,10 @@ class PulseScript:
 				a1_name = anchor_item.get_content(1)
 				a2_name = anchor_item.get_content(4)
 				anchor_item = None
+				used_anchors.append(a1_name)
 				if a2_name:
 					anchor_item = {'type':'double-anchor','name':a1_name,'name2':a2_name}
+					used_anchors.append(a2_name)
 				else:
 					anchor_item = {'type':'anchor','name':a1_name}
 				time_items.append(anchor_item)
@@ -351,8 +364,8 @@ class PulseScript:
 
 			ptype = ctype
 
-		#HERE
-		#also think about changing anchor model so that names are not explicit
+		self.validate_anchor_order(used_anchors)
+
 		c_group = self._glist[0]
 		for item in time_items:
 			if item['type'] == 'delay':
@@ -383,9 +396,7 @@ class PulseScript:
 		anchor_group_re = r'@(%s)(:?\[([1-9]\d*)\])?' % anchor_basename_token
 
 		code = self.anchors
-		#infinite loop problem, need to get token, then try to parse it as item
 		items = code.code_items(anchor_group_re)
-		#sys.exit()
 		for item in items:
 			if not item.is_valid():
 				raise ParsingError('could not parse',item)
