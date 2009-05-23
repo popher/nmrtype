@@ -5,9 +5,9 @@ class HashableArray:
 	uniqueness of all keys is strictly enforced
 	"""
 	def __init__(self):
-		self.array = []
-		self.table = {}
-		self.keys = []
+		self.array = [] #array contains ordered list of values
+		self.table = {} #table key -> ord mapping 
+		self.keys = [] #keys contains ordered list of keys
 
 	def _new_key(self):
 		import random
@@ -39,12 +39,26 @@ class HashableArray:
 		if ord != None:
 			return self.array[ord]
 
+	def ord(self,key):
+		return self.table[key]
+
 	def keys(self):
 		return self.keys
 
 	def values(self):
 		return self.array
 
-	def __iter__(self):
-		return self.array
+	def size(self):
+		return len(self.keys)
 
+	def next(self):
+		if self._iter_i >= len(self.array):
+			raise StopIteration
+		else:
+			i = self._iter_i
+			self._iter_i = i + 1
+			return self.array[i]
+
+	def __iter__(self):
+		self._iter_i = 0
+		return self

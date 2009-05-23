@@ -8,6 +8,7 @@ label_regex_token = '[a-zA-Z0-9_]+'
 anchor_basename_token = '[a-z]+'
 element_name_regex_token = '[a-zA-Z0-9]+'
 expression_regex_token = '[\^\_\{\}a-zA-Z0-9\*\/\(\)]+'
+WORD_REGEX = r'\S+'
 
 """@package docstring
 PulseScript reads the NMR pulse sequence written in the PulseScript code
@@ -26,8 +27,8 @@ class CodeItem:
 	"""
 	def __init__(self,source='',regex=None,lineno=None,colno=1):
 		"""match is regex match object that matched source of CodeItem
-		lineno - source line
-		colno - source column
+		lineno - original source line
+		colno - original source column
 		"""
 		if regex == None:
 			regex = r'^.*$'
@@ -38,14 +39,9 @@ class CodeItem:
 		self.regex = regex
 		self.re = re.compile(regex)
 		self.match = self.re.search(source)
-		self.source = source 
 		self.lineno = lineno
 		self.colno = colno
-
-	def is_valid(self):
-		if self.match == None:
-			return False
-		return True
+		self._is_iter = False
 
 	def __str__(self):
 		content = self.get_content()
@@ -59,10 +55,31 @@ class CodeItem:
 			lineno = self.lineno
 		return 'line: %d col: %d content: \'%s\'' % (lineno,colno,content)
 
+	def is_valid(self):
+		if self.match == None:
+			return False
+		return True
+
+	def is_tokenizer(self):
+		return self._is_iter
+
 	def get_content(self,partno=0):
 		if not self.is_valid():
 			return '' 
 		return self.match.group(partno)
+
+	def __iter__(self):
+		i = self.get_subitem()
+		self._is_iter = True
+		self._iter = i
+		return self
+
+	def tokenizer(self,regex=None):#CodeItem.tokenizer()
+		t = self.__iter__()
+		if regex == None:
+			regex = WORD_REGEX 
+		t._iter_regex = regex
+		return self
 
 	def get_subitem(self,partno=0):
 		source = self.get_content(partno)
@@ -99,7 +116,14 @@ class CodeItem:
 		newitem = CodeItem(source=source,regex=regex,colno=colno,lineno=lineno)
 		return newitem
 
-	def emit(self,regex):#CodeItem.emit()
+	def emit(self,regex=None,skip=r'^\s*'):
+		"""alias to next
+		"""
+		if regex == None:
+			regex = self._iter_regex
+		return self.next(regex=regex,skip=skip)
+
+	def next(self,regex=None,skip=r'^\s*'):#CodeItem.next()
 		"""emit a new CodeItem, matching regex, anchored at the beginning
 		before emission, leading space is cut out, 
 		after emission the emitted contend is cut out
@@ -108,31 +132,43 @@ class CodeItem:
 		and current item stays untouched
 
 		parameter regex - plain string regex, not compiled
+
+		this function will clobber data in the object
 		"""
+		if self._iter.is_empty():
+			raise StopIteration
+
+		if regex == None:
+			regex = self._iter_regex
+
 		#validate regex
 		if regex[0] == '^':
-			raise 'internal error, regex must not be start-anchored'
-		aregex = '^\s*' + regex
+			raise Exception('internal error, regex must not be start-anchored, have: \'%s\', item=%s' % (regex,self._iter))
+
+		aregex = skip + regex
 	
 		#make code item
-		item = self.deliver(aregex)
+		item = self._iter.deliver(aregex)#deliver keeps _iter obj intact
 		if item.is_valid():
-			#excise new item
 			icontent = item.get_content()
-			tmp = self.source.replace(icontent,'',1)	
-			if tmp == self.source and len(icontent) > 0:
-				raise 'cant strip prefix!!!'
-
-			lineno = self.lineno
-			colno = self.get_colno() + len(icontent)
-			self.__init__(source=tmp,lineno=lineno,colno=colno)
-			item = item.deliver(regex) #here empty space will be disregarded
-
+			self._iter.ltrim(icontent) #excize found item
+			item = item.deliver(regex) #now remove skippable stuff
+			
 		return item
+
+	def ltrim(self,discard):
+		content = self.get_content()
+		tmp = content.replace(discard,'',1)	
+		if tmp == content and len(discard) > 0:
+			raise Exception('cant strip prefix!!!')
+
+		lineno = self.lineno
+		colno = self.get_colno() + len(discard)
+		self.__init__(source=tmp,lineno=lineno,colno=colno)#re-init itself with default regex
 
 	def _is_whatever(self,regex):
 		whatever = re.compile(regex)
-		if whatever.match(self.source):
+		if whatever.match(self.get_content()):
 			return True
 		else:
 			return False
@@ -178,53 +214,70 @@ class CodeEntry:
 				out.append(bit.__str__())
 		return '\n'.join(out)
 
-	def code_items(self,regex=None):
+	def tokenizer(self,regex=None):#CodeEntry.tokenizer()
 		"""interface to iterating parser
 		"""
-		self._iter_regex = regex
-		return self.__iter__()
+		t = self.__iter__()
+		if regex == None:
+			regex = WORD_REGEX 
+		t._iter_regex = regex
+		return t 
 
-	def __iter__(self):
+	def __iter__(self):#CodeEntry.iter()
 		import copy
-		#prep disposable copy for parsing
+		#prep disposable shallow copy of entries for parsing
+		#shallow means that CodeItems are not copied yet
 		self._iter_code_table = {}
 		for subentry in self.subentry_order:
 			carray = self.code_table[subentry]
 			newcarray = []
 			for item in carray:
-				newitem = item.deliver()
 				newcarray.append(item)
-			self._iter_code_table[subentry] = carray
+			self._iter_code_table[subentry] = newcarray
 		self._iter_subentries = copy.deepcopy(self.subentry_order)
+		self._iter_defined = True
 		return self
 
 	def emit(self,regex):
+		"""emit is just an alias to next()
+		"""
 		return self.next(regex)
 
-	def next(self,regex=None):
+	def next(self,regex=None):#CodeEntry.next()
 		"""extracts next item matching regex passed to the iter object
+		
+		function is eating up data in the internal iterator data store
 		"""
 		#done when all subentries are processed
 		if len(self._iter_subentries) == 0:
 			raise StopIteration
-
-		#get the CodeItem from current subentry 
-		csubentry = self._iter_subentries[0]
-		carray = self._iter_code_table[csubentry]
-		citem = carray[0] # <--- this is it
 
 		if regex != None:
 			item_regex = regex
 		else:
 			item_regex = self._iter_regex
 
+		#get the CodeItem from current subentry 
+		csubentry = self._iter_subentries[0]
+		carray = self._iter_code_table[csubentry]
+		citem = carray[0] # <--- this is it
+
+		if not citem.is_tokenizer():
+			citem = citem.tokenizer(item_regex)
+			carray[0] = citem
+
 		item = citem.emit(item_regex)
 
 		#dicard empty elements
 		if carray[0].is_empty():
 			carray.pop(0)
+			#now if there is still CodeItem at carray[0]
+			if len(carray) > 0:
+				citem = carray[0]
 		if len(carray) == 0:
 			self._iter_subentries.pop(0)
+
+		print 'CE.next() called and found', item
 
 		return item
 
@@ -292,9 +345,82 @@ class PulseScript:
 			out.append(self.__dict__[section].__str__())
 		return '\n'.join(out)
 
+	def _voa_id_anchor(self,anchor):
+		name = anchor.get_content(1)
+		num = anchor.get_content(2)
+		if num == None:
+			num=-1
+		else:
+			num = int(num)
+		return (name,int(num),anchor)
+		
 	def validate_anchor_order(self,anchors):
-		#todo get this done before release
-		raise 'not here yet'
+		"""anchors must come in the same order as in the groups
+
+		if two successive anchors belong to the same group, their indexes
+		must be increasing monotonically
+		"""
+		aregex = r'([a-zA-Z]+)([\d]+)?'
+		alist = []
+		skip_re = r'[\-\s@]*'
+		for a in anchors:
+
+			at = a.tokenizer(regex=aregex) 
+			item1 = at.emit(skip=skip_re)
+			id = self._voa_id_anchor(item1)
+			alist.append(id)
+
+			try:
+				item2 = at.emit(skip=skip_re)
+				id = self._voa_id_anchor(item2)
+				alist.append(id)
+			except StopIteration:
+				pass
+
+		#collect anchor group size infor into ag_size dictionary
+		ag_size = {}
+		ag = self.pom.get_anchor_groups()
+		ag_names = ag.keys
+		for name in ag_names:
+			size = self.pom.get_anchor_group(name=name).get_size()
+			ag_size[name] = size
+
+		cord = -1 #ord of anchor groups starts at 0
+		cnum = 0  #index of anchor starts at 1
+		seen = [] #full names of inspected anchors
+		for a in alist:
+			name = a[0]
+			num = a[1]
+			anchor = a[2]
+			ahandle = '%s%d' % (name,num)
+
+			if ahandle in seen:
+				raise ParsingError('anchor repeats in same line',anchor)
+			else:
+				seen.append(ahandle)
+
+			if name not in ag_names:
+				raise ParsingError('anchor not defined in the anchors line',anchor)
+
+			#check anchor index
+			if num > ag_size[name]:
+				raise ParsingError('index of anchor exceeds anchor group size',anchor)
+			elif num == -1 and ag_size[name] >1:
+				raise ParsingError('this anchor must have numeric index > 1',anchor)
+			elif num == 0:
+				raise ParsingError('anchor index must be > 0',anchor)
+
+			ord = ag.ord(name)#order of the anchor group
+			if ord < cord:
+				raise ParsingError('anchor is out of sequence',anchor)
+			elif ord == cord:
+				#we are in the same anchor group as looked previously
+				if num < cnum:
+					raise ParsingError('incorrect order of anchor within group',anchor)
+				elif num == cnum:
+					raise Exception('internal error')
+			cord = ord #remember number of group just looked at
+			cnum = num
 
 	def parse_time(self):
 		"""parses code of "time" line
@@ -308,20 +434,18 @@ class PulseScript:
 		#first lex the time line
 		#sequence must start with delay and end with anchor
 		code = self.time
-		ps = self.pulse_sequence
+		ps = self.pom
 
 		t = label_regex_token
-		anchor_re = r'@(%s)((-+)(%s))?$' % (t,t)
-		delay_re = r'%s' % t
-
-		items = code.code_items(r'\S+')
+		anchor_re = r'^@(%s)((-+)(%s))?$' % (t,t)
+		delay_re = r'^%s$' % t
 
 		ptype = None
 		time_items = []
 		used_anchors = []
-		for item in items:
-			print item
-			sys.exit()
+
+		ttt = []
+		for item in code.tokenizer():
 
 			anchor_item = item.deliver(anchor_re) 
 			delay_item = item.deliver(delay_re)
@@ -330,7 +454,7 @@ class PulseScript:
 			elif delay_item.is_valid():
 				ctype = 'delay'
 			else:
-				raise POMError('could not recognize timing item',item)
+				raise ParsingError('could not recognize timing item',item)
 
 			if ptype == ctype:
 				if ctype == 'anchor':
@@ -339,7 +463,7 @@ class PulseScript:
 				else:
 					expected = 'anchor'
 				msg = 'item expected to be %s' % expected
-				raise POMError(msg,citem)
+				raise ParsingError(msg,citem)
 
 			#insert dummy origin anchor if necessary
 			if ptype == None:
@@ -351,20 +475,45 @@ class PulseScript:
 			if ctype == 'anchor':
 				a1_name = anchor_item.get_content(1)
 				a2_name = anchor_item.get_content(4)
-				anchor_item = None
-				used_anchors.append(a1_name)
-				if a2_name:
-					anchor_item = {'type':'double-anchor','name':a1_name,'name2':a2_name}
-					used_anchors.append(a2_name)
-				else:
-					anchor_item = {'type':'anchor','name':a1_name}
-				time_items.append(anchor_item)
-			else:
-				time_items.append({'type':'delay','name':delay_item.get_content()})
+				used_anchors.append(anchor_item)
 
-			ptype = ctype
+				anchor_data = None
+				if a2_name:
+					anchor_data = {'type':'double-anchor','name':a1_name,'name2':a2_name}
+				else:
+					anchor_data = {'type':'anchor','name':a1_name}
+				anchor_data['item'] = anchor_item
+				time_items.append(anchor_data)
+			else:
+				time_items.append({'type':'delay','name':delay_item.get_content(),'item':delay_item})
 
 		self.validate_anchor_order(used_anchors)
+
+		anchor_usage = []
+		for t in time_items:
+			print t['item']
+			if t['type'] == 'delay':
+				pass
+			else:
+				name = t['name'].replace('1234567890','')
+				anchor_usage.append(name)
+				if t['type'] == 'double-anchor':
+					name2 = t['name2'].replace('1234567890','')
+					anchor_usage.append(name2)
+					if name != name2: #if a has dashes, both subanchors must be in same group
+						print t['item'], name, name2
+						print t['item'], t['name'], t['name2']
+						raise ParsingError('hyphenated anchors in time line must belong to the same group',t['item'])
+			
+			#subanchors from same group can be used once or twice
+			#at least one anchor from each group must be used
+		stats = {}
+		for name in achor_usage:
+			if stats.has_key('name'):
+				stats['name'] = stats['name'] + 1
+			else:
+				stats['name'] = 1
+
 
 		c_group = self._glist[0]
 		for item in time_items:
@@ -390,13 +539,13 @@ class PulseScript:
 		creates list of anchor groups which themselves contain 
 		list of their anchors
 		"""
-		ps = self.pulse_sequence
+		ps = self.pom
 		tokens = (label_regex_token,label_regex_token)
 
 		anchor_group_re = r'@(%s)(:?\[([1-9]\d*)\])?' % anchor_basename_token
 
 		code = self.anchors
-		items = code.code_items(anchor_group_re)
+		items = code.tokenizer(anchor_group_re)
 		for item in items:
 			if not item.is_valid():
 				raise ParsingError('could not parse',item)
@@ -700,7 +849,7 @@ class PulseScript:
 		#first parse anchor input
 		#keys ['disp' , 'phases', 'pfg', 'delays', 'acq', 'rf', 'pulses', 'decorations', 'time']
 
-		self.pulse_sequence = PulseSequence()
+		self.pom = PulseSequence()
 
 		self.parse_anchor_groups() #create list of anchor groups '_glist' & anchors 
 		self.parse_time() #populate _delay_list, set timed and timing delays to anchor groups
@@ -761,7 +910,7 @@ class PulseScript:
 		self.hide_acq_delays()
 		self.copy_template_data_to_objects()#this is a temp plug has to be done before grads
 
-		return self.pulse_sequence
+		return self.pom
 
 	def read(self,file):
 

@@ -579,6 +579,9 @@ class Anchor:
 		self.drawing_pre_width = anchor_pre_w
 		self.drawing_post_width = anchor_post_w
 
+	def set_group(self,g):
+		self.group = g
+
 	def set_xcoor(self,xcoor): #Anchor.set_xcoor()
 		self.xcoor = xcoor
 		for e in self.events:
@@ -678,7 +681,8 @@ class Anchor:
 		return a_text
 
 class AnchorGroup:
-	def __init__(self):
+	def __init__(self,name=None):
+		self.name = name
 		self.anchor_list = []
 		self.timed_anchor = None #anchor before which previous group's post-delay comes
 		self.timing_anchor = None #anchor after which post_delay is to be applied
@@ -698,6 +702,15 @@ class AnchorGroup:
 		#calculate anchor coordinates in the anchor group relative to timed anchor
 		self.set_xcoor(0)
 		self.calc_drawing_width()
+
+	def get_name(self):
+		return self.name
+
+	def get_size(self):
+		return len(self.anchor_list)
+
+	def get_anchors(self):
+		return self.anchor_list
 
 	def get_max_xcoor(self):
 		return self.anchor_list[-1].get_max_xcoor()
@@ -1682,13 +1695,13 @@ class PulseSequence:
 	def insert_anchor_group(self,name,size,pos=-1):
 		"""creates new anchor group, populates it with anchors 
 		"""
-		g = AnchorGroup()
+		g = AnchorGroup(name)
 		#add g.pulse_sequence here?
 		self.anchor_groups.put(key=name,value=g)
 		for i in range(size):
 			a_name = '%s%d' % (name,i+1)
 			a = Anchor(a_name)
-			a.group = g
+			a.set_group(g)
 			g.append_anchor(a)
 
 	def time(self): #PulseSequence.time()
@@ -1955,7 +1968,10 @@ class PulseSequence:
 	def get_anchor_groups(self):
 		"""returns list of anchor groups
 		"""
-		return self._glist;
+		return self.anchor_groups
+
+	def get_anchor_group(self,name=None):
+		return self.anchor_groups.get(key=name)
 
 	def _procure_object(self,type,*arg,**kwarg):
 	#unnamed objects won't be stored in tables
