@@ -1,5 +1,5 @@
 anchors:      @a[2]      @b       @c[4]           @d       @e[4]                  @f[3]              @g[3]      @h[2]
-time:    rlx  @a1 tau    @b  tau  @c2-c4   t12    @d  t12  @e1-e3       tau       @f2      tau       @g3   aq   @h1
+time:    rlx  @a1 tau    @b  tau  @c2-c4   t12    @d  t12  @e1--e3      tau       @f2      tau       @g3   aq   @h1  
 rf H:       90@a1     180@b     90@c2          180@d        90@e3     lp@f1    180@f2 lp@f3       acq@g3---------h1
 rf N:                 180@b      90@c4                   90@e1                 180@f2              cpd@g2---------h2
 rf C:                                       180@d

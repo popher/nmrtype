@@ -9,6 +9,8 @@ anchor_basename_token = '[a-z]+'
 element_name_regex_token = '[a-zA-Z0-9]+'
 expression_regex_token = '[\^\_\{\}a-zA-Z0-9\*\/\(\)]+'
 WORD_REGEX = r'\S+'
+ANCHOR_NAME_REGEX = r'([a-zA-Z]+)(\d+)?'
+BLANK_PREFIX = r'^\s*'
 
 """@package docstring
 PulseScript reads the NMR pulse sequence written in the PulseScript code
@@ -25,7 +27,7 @@ class CodeItem:
 	"""primary code element class for extracting information from code
 	and for reporting parsing errors back to the user
 	"""
-	def __init__(self,source='',regex=None,lineno=None,colno=1):
+	def __init__(self,source=None,regex=None,lineno=None,colno=1):
 		"""match is regex match object that matched source of CodeItem
 		lineno - original source line
 		colno - original source column
@@ -38,7 +40,10 @@ class CodeItem:
 
 		self.regex = regex
 		self.re = re.compile(regex)
-		self.match = self.re.search(source)
+		if source == None:
+			self.match = None
+		else:
+			self.match = self.re.search(source)
 		self.lineno = lineno
 		self.colno = colno
 		self._is_iter = False
@@ -72,13 +77,16 @@ class CodeItem:
 		i = self.get_subitem()
 		self._is_iter = True
 		self._iter = i
+		self._iter_skip_regex = None
 		return self
 
-	def tokenizer(self,regex=None):#CodeItem.tokenizer()
+	def tokenizer(self,regex=None,skip=None):#CodeItem.tokenizer()
 		t = self.__iter__()
 		if regex == None:
 			regex = WORD_REGEX 
 		t._iter_regex = regex
+		if skip != None:
+			t._iter_skip_regex
 		return self
 
 	def get_subitem(self,partno=0):
@@ -116,14 +124,23 @@ class CodeItem:
 		newitem = CodeItem(source=source,regex=regex,colno=colno,lineno=lineno)
 		return newitem
 
-	def emit(self,regex=None,skip=r'^\s*'):
+	def emit(self,regex=None,skip=None):#CodeItem.emit()
 		"""alias to next
 		"""
 		if regex == None:
 			regex = self._iter_regex
+		skip = self._get_skip_regex(skip)
 		return self.next(regex=regex,skip=skip)
 
-	def next(self,regex=None,skip=r'^\s*'):#CodeItem.next()
+	def _get_skip_regex(self,skip):
+		if skip == None:
+			if self._iter_skip_regex == None:
+				skip = BLANK_PREFIX
+			else:
+				skip = self._iter_skip_regex
+		return skip
+
+	def next(self,regex=None,skip=None):#CodeItem.next()
 		"""emit a new CodeItem, matching regex, anchored at the beginning
 		before emission, leading space is cut out, 
 		after emission the emitted contend is cut out
@@ -135,6 +152,7 @@ class CodeItem:
 
 		this function will clobber data in the object
 		"""
+		skip = self._get_skip_regex(skip)
 		if self._iter.is_empty():
 			raise StopIteration
 
@@ -277,7 +295,7 @@ class CodeEntry:
 		if len(carray) == 0:
 			self._iter_subentries.pop(0)
 
-		print 'CE.next() called and found', item
+		#rint 'CE.next() called and found', item
 
 		return item
 
@@ -345,53 +363,39 @@ class PulseScript:
 			out.append(self.__dict__[section].__str__())
 		return '\n'.join(out)
 
-	def _voa_id_anchor(self,anchor):
-		name = anchor.get_content(1)
-		num = anchor.get_content(2)
-		if num == None:
-			num=-1
-		else:
-			num = int(num)
-		return (name,int(num),anchor)
-		
-	def validate_anchor_order(self,anchors):
+	def validate_anchor_order(self,anchor_info):
 		"""anchors must come in the same order as in the groups
 
 		if two successive anchors belong to the same group, their indexes
 		must be increasing monotonically
 		"""
-		aregex = r'([a-zA-Z]+)([\d]+)?'
 		alist = []
-		skip_re = r'[\-\s@]*'
-		for a in anchors:
+		for a in anchor_info:
+			if a['type'] == 'double-anchor':
+				alist.append(a['anchor1'])
+				alist.append(a['anchor2'])
+			else:
+				alist.append(a['anchor'])
 
-			at = a.tokenizer(regex=aregex) 
-			item1 = at.emit(skip=skip_re)
-			id = self._voa_id_anchor(item1)
-			alist.append(id)
-
-			try:
-				item2 = at.emit(skip=skip_re)
-				id = self._voa_id_anchor(item2)
-				alist.append(id)
-			except StopIteration:
-				pass
-
-		#collect anchor group size infor into ag_size dictionary
+		#collect anchor group size info into ag_size dictionary
 		ag_size = {}
 		ag = self.pom.get_anchor_groups()
-		ag_names = ag.keys
+		ag_names = ag.keys()
 		for name in ag_names:
 			size = self.pom.get_anchor_group(name=name).get_size()
 			ag_size[name] = size
 
-		cord = -1 #ord of anchor groups starts at 0
+		cord = -1 #ord(er) of anchor groups starts at 0
 		cnum = 0  #index of anchor starts at 1
 		seen = [] #full names of inspected anchors
-		for a in alist:
-			name = a[0]
-			num = a[1]
-			anchor = a[2]
+		for anchor in alist:
+			name = anchor.get_content(1)
+			num = anchor.get_content(2)
+			print anchor
+			if num == None:
+				num = -1 
+			else:
+				num = int(num)
 			ahandle = '%s%d' % (name,num)
 
 			if ahandle in seen:
@@ -406,6 +410,7 @@ class PulseScript:
 			if num > ag_size[name]:
 				raise ParsingError('index of anchor exceeds anchor group size',anchor)
 			elif num == -1 and ag_size[name] >1:
+				print name, ag_size[name]
 				raise ParsingError('this anchor must have numeric index > 1',anchor)
 			elif num == 0:
 				raise ParsingError('anchor index must be > 0',anchor)
@@ -434,7 +439,6 @@ class PulseScript:
 		#first lex the time line
 		#sequence must start with delay and end with anchor
 		code = self.time
-		ps = self.pom
 
 		t = label_regex_token
 		anchor_re = r'^@(%s)((-+)(%s))?$' % (t,t)
@@ -442,11 +446,15 @@ class PulseScript:
 
 		ptype = None
 		time_items = []
-		used_anchors = []
+		used_anchor_data = []
+
+		ag = self.pom.get_anchor_groups()
+		for g in ag:
+			print g.name, g.get_size()
+		sys.exit()
 
 		ttt = []
 		for item in code.tokenizer():
-
 			anchor_item = item.deliver(anchor_re) 
 			delay_item = item.deliver(delay_re)
 			if anchor_item.is_valid():
@@ -469,51 +477,71 @@ class PulseScript:
 			if ptype == None:
 				if ctype == 'delay': #first anchor is implicit
 					aname = 'OriginAnchor'
-					time_items.append({'type':'anchor','name':aname})
-					ps.insert_anchor_group(aname,1,0) #insert dummy
+					self.pom.insert_anchor_group(aname,pos=0,size=1) #insert dummy
+					time_items.insert(0,{'type':'anchor','name':aname})
+					ag = self.pom.get_anchor_groups()
+					for g in ag:
+						print g.name, g.size
 
+			#this is effectively building the parse tree for used anchors
+			#not very pretty
 			if ctype == 'anchor':
-				a1_name = anchor_item.get_content(1)
-				a2_name = anchor_item.get_content(4)
-				used_anchors.append(anchor_item)
-
-				anchor_data = None
-				if a2_name:
-					anchor_data = {'type':'double-anchor','name':a1_name,'name2':a2_name}
+				anchor1 = anchor_item.get_subitem(1)
+				anchor1 = anchor1.deliver(ANCHOR_NAME_REGEX)
+				anchor2 = anchor_item.get_subitem(4)
+				if anchor2.is_valid():
+					anchor2 = anchor2.deliver(ANCHOR_NAME_REGEX)
+					anchor_data = {'type':'double-anchor','anchor1':anchor1,'anchor2':anchor2}
 				else:
-					anchor_data = {'type':'anchor','name':a1_name}
-				anchor_data['item'] = anchor_item
+					anchor_data = {'type':'anchor','anchor':anchor1}
+				used_anchor_data.append(anchor_data)
 				time_items.append(anchor_data)
 			else:
-				time_items.append({'type':'delay','name':delay_item.get_content(),'item':delay_item})
+				time_items.append({'type':'delay','name':delay_item.get_content(),'delay':delay_item})
 
-		self.validate_anchor_order(used_anchors)
+			ptype = ctype
 
-		anchor_usage = []
-		for t in time_items:
-			print t['item']
-			if t['type'] == 'delay':
-				pass
+		self.validate_anchor_order(used_anchor_data)
+
+		used_anchors= []
+		for ad in used_anchor_data:
+			if ad['type'] == 'double-anchor':
+				a1 = ad['anchor1']
+				a2 = ad['anchor2']
+				aname1 = a1.get_content(1)
+				aname2 = a2.get_content(1)
+				if aname1 != aname2:
+					#if a has dashes, both subanchors must be in same group
+					raise ParsingError('anchor range in time line can not have \
+						anchors from different groups',a1,a2)
+				used_anchors.extend([a1,a2])
 			else:
-				name = t['name'].replace('1234567890','')
-				anchor_usage.append(name)
-				if t['type'] == 'double-anchor':
-					name2 = t['name2'].replace('1234567890','')
-					anchor_usage.append(name2)
-					if name != name2: #if a has dashes, both subanchors must be in same group
-						print t['item'], name, name2
-						print t['item'], t['name'], t['name2']
-						raise ParsingError('hyphenated anchors in time line must belong to the same group',t['item'])
+				used_anchors.append(ad['anchor'])
 			
 			#subanchors from same group can be used once or twice
 			#at least one anchor from each group must be used
-		stats = {}
-		for name in achor_usage:
-			if stats.has_key('name'):
-				stats['name'] = stats['name'] + 1
+		group_usage_stats = {}
+		for anchor in used_anchors:
+			gname = anchor.get_content(1)
+			if group_usage_stats.has_key(gname):
+				count = group_usage_stats[gname]
+				count = count + 1
+				if count > 2:
+					msg = 'anchor from group %s used more then twice in time line' % name
+					raise ParsingError(msg,anchor)
+				group_usage_stats[gname] = count 
 			else:
-				stats['name'] = 1
+				group_usage_stats[gname] = 1
 
+		glist = self.pom.get_anchor_groups()
+
+		ag_names = self.pom.get_anchor_groups().keys()
+		print ag_names
+		sys.exit()
+		for name in ag_names:
+			if name not in group_usage_stats.keys():
+				g = self.pom.get_anchor_group(name=name)
+				raise ParsingError('anchor group not used in time line',g.code)
 
 		c_group = self._glist[0]
 		for item in time_items:

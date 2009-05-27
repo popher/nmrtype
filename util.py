@@ -5,59 +5,74 @@ class HashableArray:
 	uniqueness of all keys is strictly enforced
 	"""
 	def __init__(self):
-		self.array = [] #array contains ordered list of values
-		self.table = {} #table key -> ord mapping 
-		self.keys = [] #keys contains ordered list of keys
+		self._array = [] #array contains ordered list of values
+		self._table = {} #table key -> ord mapping 
+		self._keys = [] #keys contains ordered list of keys
 
 	def _new_key(self):
 		import random
 		key = 'key'
-		if len(self.array) > 0:
-			key = self.table.keys()[0]
-		while key in self.table.keys():
+		if len(self._array) > 0:
+			key = self._table.keys()[0]
+		while key in self._table.keys():
 			key = random.randint(1,1000000)
 		return key
 
-	def put(self,key=None,value=None):
+	def __str__(self):
+		out = []
+		for key in self._keys:
+			i = self._table[key]
+			val = self._array[i]
+			out.append('%s=%s' % (key,val))
+		return '\n'.join(out)
+
+	def insert(self,key=None,value=None,pos=None):
 		if key == None:
 			key = self._new_key()
 
-		if self.table.has_key(key):
-			ord = self.table[key]
-			self.array[ord] = value
+		if self._table.has_key(key):
+			raise TypeError('item %s already exists' % key)
 		else:
-			self.array.append(value)	
-			self.keys.append(key)
-			ord = len(self.array) - 1
-			self.table[key] = ord 
+			if pos != None:
+				if pos > len(self._array) - 1:
+					raise IndexError('index in HashArray.put() out of range')
+				for k in self._table.keys():
+					i = self._table[k]
+					if i >= pos:
+						self._table[k] = i + 1
+			else:
+				pos = len(self._array)
+			self._array.insert(pos,value)	
+			self._keys.insert(pos,key)
+			self._table[key] = pos 
 
 	def get(self,key=None,ord=None):
 		if key != None and ord != None:
 			raise TypeError('must use either key or ord in HashableArray.get()')
 		if key != None:
-			return self.array[self.table[key]]
+			return self._array[self._table[key]]
 		if ord != None:
-			return self.array[ord]
+			return self._array[ord]
 
 	def ord(self,key):
-		return self.table[key]
+		return self._table[key]
 
 	def keys(self):
-		return self.keys
+		return self._keys
 
 	def values(self):
-		return self.array
+		return self._array
 
 	def size(self):
-		return len(self.keys)
+		return len(self._keys)
 
 	def next(self):
-		if self._iter_i >= len(self.array):
+		if self._iter_i >= len(self._array):
 			raise StopIteration
 		else:
 			i = self._iter_i
 			self._iter_i = i + 1
-			return self.array[i]
+			return self._array[i]
 
 	def __iter__(self):
 		self._iter_i = 0

@@ -18,7 +18,7 @@ import copy
 #IMAGE_DIR_URL = 'http://nmrwiki.org/wiki/images/NMRPulse'
 #sys.path.append('/home/nmrwikio/incoming/Imaging-1.1.6/PIL') #path to Python Imaging Library
 #sys.path.append('/home/nmrwikio/incoming/python-modules/numpy/lib64/python2.3/site-packages') #path to numpy library
-from numpy import *
+#from numpy import *
 
 latex_cmd = latex_dir + 'latex'
 dvipng_cmd = latex_dir + 'dvipng'
@@ -681,8 +681,9 @@ class Anchor:
 		return a_text
 
 class AnchorGroup:
-	def __init__(self,name=None):
+	def __init__(self,name=None,source=None):
 		self.name = name
+		self.source = source #reference to source code
 		self.anchor_list = []
 		self.timed_anchor = None #anchor before which previous group's post-delay comes
 		self.timing_anchor = None #anchor after which post_delay is to be applied
@@ -1689,15 +1690,15 @@ class PulseSequence:
 		self.fg_color = 0
 		self.bg_color = 256
 
-	def append_anchor_group(self,name,size):
-		self.insert_anchor_group(name,size)
+	def append_anchor_group(self,name,size=None,source=None):
+		self.insert_anchor_group(name,size=size,source=source)
 
-	def insert_anchor_group(self,name,size,pos=-1):
+	def insert_anchor_group(self,name,pos=-1,size=None,source=None):
 		"""creates new anchor group, populates it with anchors 
 		"""
-		g = AnchorGroup(name)
+		g = AnchorGroup(name,source=source)
 		#add g.pulse_sequence here?
-		self.anchor_groups.put(key=name,value=g)
+		self.anchor_groups.insert(key=name,value=g)
 		for i in range(size):
 			a_name = '%s%d' % (name,i+1)
 			a = Anchor(a_name)
