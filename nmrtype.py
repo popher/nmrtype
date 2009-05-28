@@ -6,7 +6,10 @@ import sys
 #from Bruker import Bruker
 #from Spinach import Spinach
 
-code = parser.parse(sys.argv[1])
+#code = parser.parse(sys.argv[1])
+
+code = parser.parse('tests/fastNhsqc.seq')
+
 #seq = PulseSequence(code)
 #seq.draw()
 
