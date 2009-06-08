@@ -5,12 +5,10 @@ rf N:                 180@b      90@c4                   90@e1                 1
 rf C:                                       180@d
 pfg z:       g1@a2         g1@c1 g2@c3                     g2@e2  g3@e4                       g3@g1
 
-[rf channels]
+[channels]
 H: nucleus=H label=^1H hardware=1
 N: nucleus=N label=^{15}N hardware=3
 C: nucleus=C label=^{13}C hardware=2
-
-[pfg channels]
 z: label=grad\ z
 
 [dimensions]

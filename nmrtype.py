@@ -9,6 +9,7 @@ import sys
 #code = parser.parse(sys.argv[1])
 
 code = parser.parse('tests/fastNhsqc.seq')
+	
 
 #seq = PulseSequence(code)
 #seq.draw()

@@ -26,6 +26,36 @@ class HashableArray:
 			out.append('%s=%s' % (key,val))
 		return '\n'.join(out)
 
+	def __getitem__(self,key):
+		if isinstance(key,int):
+			return self.get(ord=key)
+		elif isinstance(key,str):
+			return self.get(key=key)
+		else:
+			raise TypeError
+
+	def __setitem__(self,key,item):
+		if isinstance(key,int):
+			self.insert(pos=key,value=item)
+		elif isinstance(key,str):
+			self.insert(key=key,value=item)
+		else:
+			raise TypeError
+
+	def __contains__(self,key):
+		if key in self._keys:
+			return True
+		else:
+			return False
+
+	def items(self):
+		out = []
+		for key in self._keys:
+			ord = self._table[key]
+			val = self._array[ord]
+			out.append((key,val))
+		return out
+
 	def insert(self,key=None,value=None,pos=None):
 		if key == None:
 			key = self._new_key()

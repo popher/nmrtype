@@ -268,7 +268,7 @@ class N:
 class E:
 	"""delay expression class
 	holds tree representation of formula for calulating delays
-	operands are either expressions or PulseSequenceElement objects
+	operands are either expressions or Element objects
 	or number objects 
 	
 	units are seconds
@@ -479,13 +479,22 @@ class E:
 			return True
 		return False
 
-class Anchor:
-	def __init__(self,name):
-		self.name = name
+class Node(object):
+	def __init__(self,parent):
+		self.parent = parent
+	def getpom(self):
+		if self.parent == None:
+			return self
+		else:
+			return self.parent.getpom()
+	pom = property(getpom,doc='get toplevel pulse sequence object')
+
+class Anchor(Node):
+	def __init__(self,parent):
+		Node.__init__(self,parent)
 		self.decoration = None
 		self.label = None
 		self.events = []
-		self.group = None #parent anchor group
 		self.xcoor = None
 		self.type = 'empty' #empty|pegging|normal read below
 		self.drawing_width = None #this works differently for anchors with
@@ -495,6 +504,12 @@ class Anchor:
 								#or normal(containing events attached to single anchor)
 								#or empty - containing zero events
 								#a combo type is impossible
+
+	def get_name(self):
+		num = self.parent.index(self) + 1
+		return self.parent.name + str(num)
+
+	name = property(get_name)
 
 	def _bootstrap_objects(self,ps_obj):
 		self.pulse_sequence = ps_obj
@@ -641,33 +656,36 @@ class Anchor:
 		for channel in chlist:
 			self.draw_tic(channel)
 
-	def add_event(self,event):
+	def add_event(self,event):#Anchor.add_event()
+
+		print 'adding event to ' , self.name
 
 		if len(self.events) > 0:
 			type = event._type
 			if type == 'delay':
 				raise 'internal parser error: delays cannot be added as events'
 
-			n1 = event.name
 			t1 = event._type
-			n2 = self.events[0].name
 			t2 = self.events[0]._type
 			if not self._are_events_compatible(event,self.events[0]):
-				err_text = 'event %s of %s type ' % (n1,t1)\
+				err_text = 'event of %s type ' % t1\
 						+ 'cannot be added to anchor @%s' % self.name \
 						+ ' because it already contains ' \
-						+ 'event %s of %s type' % (n2,t2)
+						+ 'event %s type' % t2
 				raise ParsingError(err_text)	
 		self.events.append(event)
+		event.anchor = self
 
 	def __str__(self):
-		name = 'Null'
-		if self.name:
-			name = self.name
-			
-		a_text = '@' + name
-		num = len(self.events)
 
+		#this goes into anchor group
+		#name = 'Null'
+		#if self.name:
+		#	name = self.name
+		
+		#a_text = '@' + name
+
+		num = len(self.events)
 		e_lines = []
 		for e in self.events:
 			l = e.__str__()
@@ -677,11 +695,12 @@ class Anchor:
 
 		e_txt = ';'.join(e_lines)
 
-		a_text = a_text + ' (%d events: %s)' % (num,e_txt)
+		a_text = ' (%d events: %s)' % (num,e_txt)
 		return a_text
 
-class AnchorGroup:
-	def __init__(self,name=None,source=None):
+class AnchorGroup(Node):
+	def __init__(self,name,parent=None,source=None):
+		Node.__init__(self,parent)
 		self.name = name
 		self.source = source #reference to source code
 		self.anchor_list = []
@@ -704,8 +723,8 @@ class AnchorGroup:
 		self.set_xcoor(0)
 		self.calc_drawing_width()
 
-	def get_name(self):
-		return self.name
+	def get_source(self):
+		return self.source
 
 	def get_size(self):
 		return len(self.anchor_list)
@@ -801,22 +820,27 @@ class AnchorGroup:
 			c_index = c_index + 1
 			prev_a = a
 
-	def append_anchor(self,a):
+	def append_anchor(self):
+		a = Anchor(self)
 		self.anchor_list.append(a)
 
-	def get_anchor(self,a_name):
-		for a in self.anchor_list:
-			if a.name == a_name:
-				return a
-		raise 'anchor @%s not found in the anchor group' % a.name
+	def __getitem__(self,i=1):
+		if isinstance(i,str):
+			i = int(i)
+		return self.anchor_list[i-1] #count starts with 1
+	def index(self,anchor):
+		return self.anchor_list.index(anchor)
 
-	def set_timed_anchor(self,a_name):
-		a = self.get_anchor(a_name)
+	def set_timed_anchor(self,i):
+		a = self[i]
 		self.timed_anchor = a
 
-	def set_timing_anchor(self,a_name):
-		a = self.get_anchor(a_name)
+	def set_timing_anchor(self,i):
+		a = self[i]
 		self.timing_anchor = a
+
+	def set_post_delay(self,delay):
+		self.post_delay = delay
 
 	def draw_all_tics(self):#AnchorGroup.draw_all_tics()
 		for a in self.anchor_list:
@@ -849,13 +873,15 @@ class AnchorGroup:
 		out = out + 'Post delay: ' + self.post_delay.__str__()
 		return out + '\n'
 
-class Dimension:
-	def __init__(self,name):
+class Dimension(Node):
+	def __init__(self,name,parent=None):
+		Node.__init__(self,parent)
 		self.name = name
 		self.template = None
 
-class Channel:
-	def __init__(self,name,type):
+class Channel(Node):
+	def __init__(self,name,type,parent=None):
+		Node.__init__(self,parent)
 		self.type = type
 		self.name = name
 		self.height_above = None
@@ -889,23 +915,8 @@ class Channel:
 			raise CompilationError('wide event is already off %s when trying to turn it off again' % self.name)
 		self._compile_wide_event_status = 'off'
 
-#an object collecting information about pulse sequence elements
-#that is applied to several instances of the events
-#for example several pulses can share a phase-cycling table
-#or several pfg's in the pulse sequence can be identical 
-#this class is populated at run time by function PulseSequence._procure_object
-#then before pulse sequence is drawn information from template can be copied 
-#to the instances as a temporary plug
-#or maybe not so temporary ...
-class PulseSequenceElementTemplate: #todo upgrade this class must become more influential
-	def __init__(self,type,name):
-		self._type = type #must match corresponding PulseSequenceElement._type
-		self.name = name
-		if type == 'pfg' or type == 'pfg_wide':
-			self.strength=100
-
-class PulseSequenceElement(E): #this is weird - element inherits from expression type
-	"""base class for pulse sequence elements: delays, phases, pulses, etc
+class Element(E,Node): #this is weird - element inherits from expression type
+	"""base class for pulse sequence elements: delays, pulses, etc
 
 	instant events have reference to carrying anchor (except phases)
 	wide events have an additional reference to end_anchor
@@ -916,23 +927,27 @@ class PulseSequenceElement(E): #this is weird - element inherits from expression
 	however at compile stage for production of code WideEventToggle elements are
 	inserted to anchors at the beginning and the end of wide events
 	"""
-	def __init__(self):
-		self.anchor = None
+	def __init__(self,parent=None):
+		Node.__init__(self,parent)
 		self.drawing_width = 0
 		self.drawing_pre_width = 0  #pixels before anchor
 		self.drawing_post_width = 0 #pixels after anchor
 		self.drawing_height = 0
-		self.template = None #instance of PulseSequenceElementTemplate
 		self.expr = None
-		self.name = None
 		self.channel = None
-		self.edge = 'center' #issue: not needed for phase
-		self.pre_span = None  #these aren't needed for phase either - so maybe phase shouldn be PSE
+		self.edge = 'center' #issue: not needed for phase or pulse
+		self.pre_span = None
 		self.post_span = None
+
+		self._instance_list = []
+
 	def __str__(self):
 		return self._type
 
-	def get_op(self): #PulseSequenceElement.get_op() plug
+	def create_instance(self,*arg,**kwarg):
+		raise Exception('internal error: method must be implemented in derived class')
+
+	def get_op(self): #Element.get_op() plug
 		return None
 
 	def get_maxh(self):
@@ -940,10 +955,10 @@ class PulseSequenceElement(E): #this is weird - element inherits from expression
 		"""
 		return self.pulse_sequence.channel_drawing_height
 
-	def set_ycoor(self,ycoor):#PulseSequenceElement.set_ycoor()
+	def set_ycoor(self,ycoor):#Element.set_ycoor()
 		self.ycoor = ycoor
 
-	def get_primary_delay_list(self): #PulseSequenceElement.get_primary_delay_list()
+	def get_primary_delay_list(self): #Element.get_primary_delay_list()
 		"""dummy function that returns empty list
 		only delays should return primary delay components from
 		their expressions
@@ -966,7 +981,7 @@ class PulseSequenceElement(E): #this is weird - element inherits from expression
 	def reduce(self):
 		pass
 
-	def time(self): # PulseSequenceElement.time()
+	def time(self): # Element.time()
 		"""calculate pre_span and post_span expressions
 
 		Limitation: this method can be only called after compile initialization
@@ -992,7 +1007,7 @@ class PulseSequenceElement(E): #this is weird - element inherits from expression
 		self.pre_span = E('add',pre,self.pre_gating_delay)
 		self.post_span = E('add',post,self.post_gating_delay)
 
-	def set_xcoor(self,xcoor=None):#PulseSequenceElement.set_xcoor()
+	def set_xcoor(self,xcoor=None):#Element.set_xcoor()
 		if xcoor == None:
 			self.xcoor = self.anchor.xcoor
 		else:
@@ -1029,7 +1044,7 @@ class PulseSequenceElement(E): #this is weird - element inherits from expression
 				val = self.template.__dict__[key]
 				self.__dict__[key] = val
 
-	def get_type(self): #PulseSequenceElement.get_type()
+	def get_type(self): #Element.get_type()
 		return self._type
 
 	def is_pegged(self):
@@ -1156,7 +1171,7 @@ class PulseSequenceElement(E): #this is weird - element inherits from expression
 	def _bootstrap(self,ps_obj):
 		self.pulse_sequence = ps_obj
 
-class Phase(PulseSequenceElement):
+class Phase:#phase is no more pulse sequence element
 	def __init__(self,name,**kwarg):
 		self._type = 'phase'
 		self.name = name
@@ -1177,9 +1192,136 @@ class Phase(PulseSequenceElement):
 		str = str + ' ' + self.table.__str__()
 		return str
 
-class Delay(PulseSequenceElement):
+class ElementInstance(Node):
+	def __init__(self,parent,source=None):
+		Node.__init__(self,parent)
+		self.source = source
+		self.anchor = None
+
+class WideElementInstance(ElementInstance):
+	def __init__(self,parent,source=None):
+		ElementInstance.__init__(self,parent,source=source)
+		self.__delattr__('anchor')
+		self.start_anchor = None
+		self.end_anchor = None
+
+class DelayInstance(WideElementInstance):
+	def __init__(self,parent,source=None):
+		WideElementInstance.__init__(self,parent,source=source)
+
+class DelayElement(Element):
+	def __init__(self,name,expr=None,parent=None):
+		Element.__init__(self,parent=parent)
+		self.name = name      #this element has the name parameter
+		self.length = None    #length of delay in seconds
+		self.label = None
+		self.formula = None
+		self.show_at = None #channel at which to draw delay
+		self.expr = expr #delay expression assignment in constructor
+		self.label_yoffset = 0
+		self.image = None #image object
+
+		#start_anchor
+		#end_anchor assinged in PulseSequence._attach_delays_to_anchors()
+
+	def __str__(self):
+		if self.expr:
+			expr = ' expression=%s' % self.expr.get_eqn_str()
+		else:
+			expr = self.name
+		#used to print out formula, but so far it's empty anyway
+		return '%s label=%s formula=%s' % (self.name,self.label,expr)
+
+	def create_instance(self,source=None):
+		d = DelayInstance(self,source=source)
+		return d
+
+	def get_primary_delay_list(self): #Delay.get_primary_delay_list()
+		if self.expr == None:
+			return [self]
+		else:
+			return self.expr.get_primary_delay_list()
+
+	def get_eqn_str(self):
+		#if delay expression evaluates to None, then this delay is primary parameter
+		#and needs to be set externally by the spectroscopist
+		if self.expr == None:
+			return Element.get_eqn_str(self)
+		else:
+			return self.expr.get_eqn_str()
+
+	def get_varian_code(self):
+		expr = self.get_varian_expression()
+		try:
+			if float(expr) == 0:
+				return []
+		except:
+			return ['\tdelay(%s);' % expr]
+
+	def set_xcoor(self,xcoor): #Delay.set_xcoor()
+		"""set x coordinate of delay
+		"""
+		self.xcoor = xcoor
+
+	def calc_drawing_width(self): #Delay.calc_drawing_width()
+		"""if delay is hidden, then default width is returned
+		otherwise an image is generated from label
+		then the resulting value taken directly from the image width
+		"""
+		if self.is_hidden():
+			self.drawing_width = 10 #todo magic number
+			return
+		if self.label:
+			text = self.label
+		else:
+			text = self.name
+		self.image = latex2image(text)
+		self.drawing_width = self.image.size[0]
+
+	def draw_bounding_tics(self):#Delay.draw_bounding_tics()
+		"""a tic mark will be drawn on a side where anchor has no attached events
+		"""
+		start = self.start_anchor
+		end = self.end_anchor
+		start.draw_tic(self.show_at)
+		end.draw_tic(self.show_at)
+
+	def draw(self,draw_obj): #Delay.draw()
+		"""this routine is really drawing a delay label text, and does nothing if 
+		delay is "hidden"
+		"""
+
+		if self.is_hidden():
+			return
+
+		if self.label:
+			text = self.label
+		else:
+			text = self.name
+		self.ycoor = self.pulse_sequence.get_rf_channel_ycoor(self.show_at) \
+						- self.pulse_sequence.channel_drawing_height/2 \
+						- int(self.label_yoffset)
+
+		image_obj = self.pulse_sequence.get_image_object()
+		#delay label xplacement is 'center'
+		paste_image(self.image,self.pulse_sequence,(self.xcoor,self.ycoor),'center-clear','center')
+
+		self.draw_bounding_tics()
+
+	def is_hidden(self):
+		if self.template.__dict__.has_key('hide'):
+			if self.template.hide == False:
+				return False
+			elif self.template.hide == True:
+				return True
+			else:
+				raise 'internal error. wrong value of Delay.template.hide'
+		else:
+			return False
+
+class Delay(Element):
 	def __init__(self,name,expr=None):
-		PulseSequenceElement.__init__(self)
+		Element.__init__(self)
 		self._type = 'delay'
 		self.type = 'general' #todo remove? plug in better POM
 		self.length = None    #length of delay in seconds
@@ -1192,7 +1334,7 @@ class Delay(PulseSequenceElement):
 		self.expr = expr #delay expression assignment in constructor
 		self.label_yoffset = 0
 		self.image = None #image object
-		self.template = PulseSequenceElementTemplate('delay',name)
+		self.template = ElementTemplate('delay',name)
 		#start_anchor
 		#end_anchor assinged in PulseSequence._attach_delays_to_anchors()
 
@@ -1214,7 +1356,7 @@ class Delay(PulseSequenceElement):
 		#if delay expression evaluates to None, then this delay is primary parameter
 		#and needs to be set externally by the spectroscopist
 		if self.expr == None:
-			return PulseSequenceElement.get_eqn_str(self)
+			return Element.get_eqn_str(self)
 		else:
 			return self.expr.get_eqn_str()
 
@@ -1288,16 +1430,16 @@ class Delay(PulseSequenceElement):
 			return False
 
 
-class WideEventToggle(PulseSequenceElement):
+class WideEventToggle(Element):
 	"""class for turning on/off wide event
 	not used for drawing output, only used for compilation into code
 
 	this type of event does not have channel assigned - maybe 
-	get_channel() getter is needed for PulseSequenceElement
+	get_channel() getter is needed for Element
 	so that channel will be read from the wide event iself?
 	"""
 	def __init__(self,type='on',event=None):
-		PulseSequenceElement.__init__(self)
+		Element.__init__(self)
 		self._type = 'wide_event_toggle'
 		if type not in ('on','off'):
 			raise 'internal error: unknown type %s of WideEventToggle' % type
@@ -1309,11 +1451,11 @@ class WideEventToggle(PulseSequenceElement):
 		return self.event.get_eqn_str()
 
 	def set_ycoor(self,ycoor):
-		PulseSequenceElement.set_ycoor(self,ycoor)
+		Element.set_ycoor(self,ycoor)
 		self.event.ycoor = ycoor
 
 	def set_xcoor(self,xcoor=None): #WideEventToggle.set_xcoor()
-		PulseSequenceElement.set_xcoor(self,xcoor)
+		Element.set_xcoor(self,xcoor)
 		if self.type == 'on':
 			self.event.xcoor = self.xcoor
 
@@ -1351,7 +1493,7 @@ class VSimPulse:
 	"""
 	def __init__(self):
 		self.events=[None,None,None] #up to three simultaneous pulses
-	def add_event(self,p):
+	def add_event(self,p): #VSimPulse.add_event()
 		"""add VPulse object to slot corresponding to the channel
 		"""
 		if isinstance(p,Pulse):
@@ -1393,18 +1535,17 @@ class VSimPulse:
 		text = '%s%s,%s);' % (text,events[0].gt1,events[0].gt2) #temporary plug
 		return text
 
-class Pulse(PulseSequenceElement):
+class PulseInstance(ElementInstance):
 	"""class for RF pulse
 	"""
-	def __init__(self,type,channel,name=None):
-		PulseSequenceElement.__init__(self)
+	def __init__(self,parent,source=None):
+		ElementInstance.__init__(self,parent,source=source)
 		self._type = 'rf_pulse'
-		self.type = type #90,180, shp, rect, lp, etc
-		self.name = name
+		#self.type = type #90,180, shp, rect, lp, etc
+		#self.name = name
 		#extra stuff
 		self.length = None 
 		self.power = None 
-		self.channel = channel
 		self.phase = None
 		self.label = None
 		self.comp = None #compensation delay for 90 degree pulses
@@ -1417,7 +1558,7 @@ class Pulse(PulseSequenceElement):
 		return out
 
 	def time(self): #Pulse.time()
-		PulseSequenceElement.time(self)
+		Element.time(self)
 		if self.comp == None:
 			return
 		span = None
@@ -1427,7 +1568,7 @@ class Pulse(PulseSequenceElement):
 			span = self.post_span
 		#perform surgery on extracted span
 		ops = span.get_operands()
-		# using ops[1] careful here index must be correct - see PulseSequenceElement.time() method
+		# using ops[1] careful here index must be correct - see Element.time() method
 		#todo: should I check that this is a 90 pulse?
 		comp = E('div',E('mul',self,N(2)),N('pi'))
 		ops[1] = E('max',ops[1],Delay('comp_delay',expr=comp)) #delay expression assignment
@@ -1446,7 +1587,7 @@ class Pulse(PulseSequenceElement):
 			self.drawing_height = 0.2*maxh
 		else:
 			self.drawing_height = maxh
-		PulseSequenceElement.calc_drawing_dimensions(self)
+		Element.calc_drawing_dimensions(self)
 
 	def get_varian_parameters(self):# Pulse.get_varian_parameters()
 		pw = self.varian_name
@@ -1477,9 +1618,9 @@ class Pulse(PulseSequenceElement):
 
 	def draw(self,draw_obj):#Pulse.draw()
 		if self.type in ('90','180','lp','rect'):
-			PulseSequenceElement.draw_up_rect_pulse(self,draw_obj)
+			Element.draw_up_rect_pulse(self,draw_obj)
 		elif self.type == 'shp':
-			PulseSequenceElement.draw_up_shaped_pulse(self,draw_obj)
+			Element.draw_up_shaped_pulse(self,draw_obj)
 
 		xcoor = self.edge_calc_x()
 
@@ -1503,11 +1644,10 @@ class Pulse(PulseSequenceElement):
 			draw_latex(text,seq,coor,yplacement='above')
 			
 
-class WidePulse(Pulse):
-	def __init__(self,type,channel,**kwarg):
-		Pulse.__init__(self,type,channel,**kwarg)
+class WidePulseInstance(WideElementInstance):
+	def __init__(self,parent,source=None):
+		WideElementInstance.__init__(self,parent,source=source)
 		self._type = 'rf_wide_pulse'
-		self.end_anchor = None
 		self.label = None
 		self.h1 = 100 #default 100% start height
 		self.h2 = 100 #default 100% end height
@@ -1538,9 +1678,9 @@ class WidePulse(Pulse):
 			raise 'unsupported type %s of wide pulse' % self.type
 
 	def draw(self,draw_obj):
-		PulseSequenceElement.draw_pegged_pulse(self,draw_obj)
+		Element.draw_pegged_pulse(self,draw_obj)
 
-class Acquisition(WidePulse):
+class Acquisition(WideElementInstance):
 	def __init__(self,channel,name=None):
 		type = 'acq'
 		WidePulse.__init__(self,type,channel,name=None)
@@ -1554,13 +1694,13 @@ class Acquisition(WidePulse):
 
 	def draw(self,draw_obj):
 		if self.type == 'fid':
-			PulseSequenceElement.draw_fid(self,draw_obj)
+			Element.draw_fid(self,draw_obj)
 		elif self.type == 'echo':
-			PulseSequenceElement.draw_echo_fid(self,draw_obj)
+			Element.draw_echo_fid(self,draw_obj)
 
-class GradPulse(PulseSequenceElement):
-	def __init__(self,name,channel):
-		PulseSequenceElement.__init__(self)
+class GradPulse(Element):
+	def __init__(self,parent):
+		ElementInstance.__init__(self,parent)
 		self._type = 'pfg'
 		self.type = 'shaped'#shaped or rectangular
 		self.alternated = False
@@ -1575,7 +1715,7 @@ class GradPulse(PulseSequenceElement):
 		return 'pfg %s %s %s %s' % (self.channel,self.name,self.length,self.strength)
 	def calc_drawing_dimensions(self):
 		self.drawing_width = 12  #was 32 magic number
-		PulseSequenceElement.calc_drawing_dimensions(self)
+		Element.calc_drawing_dimensions(self)
 		maxh = self.get_maxh()
 		#magic number below
 		maxh = maxh*0.95 #gradient pulse must be shorter so that negative and positive fit
@@ -1604,24 +1744,24 @@ class GradPulse(PulseSequenceElement):
 	def draw(self,psdraw):
 		if self.type == 'shaped':
 			if not self.alternated:
-				PulseSequenceElement.draw_up_arc_pulse(self,psdraw)
+				Element.draw_up_arc_pulse(self,psdraw)
 			else:
 				#strange hackery about drawing_height of pfg pulses
 				dh = self.drawing_height
 				self.drawing_height = self.strength[0]*self._maxh/100
-				PulseSequenceElement.draw_up_arc_pulse(self,psdraw)
+				Element.draw_up_arc_pulse(self,psdraw)
 				self.drawing_height = self.strength[1]*self._maxh/100
-				PulseSequenceElement.draw_up_arc_pulse(self,psdraw)
+				Element.draw_up_arc_pulse(self,psdraw)
 				self.drawing_height = dh
 		elif self.type == 'rectangular':
 			if not self.alternated:
-				PulseSequenceElement.draw_up_rect_pulse(self,psdraw)
+				Element.draw_up_rect_pulse(self,psdraw)
 			else:
 				dh = self.drawing_height
 				self.drawing_height = self.strength[0]*self._maxh/100
-				PulseSequenceElement.draw_up_rect_pulse(self,psdraw)
+				Element.draw_up_rect_pulse(self,psdraw)
 				self.drawing_height = self.strength[1]*self._maxh/100
-				PulseSequenceElement.draw_up_rect_pulse(self,psdraw)
+				Element.draw_up_rect_pulse(self,psdraw)
 				self.drawing_height = dh
 
 		y = self.bottom_ycoor()
@@ -1634,8 +1774,8 @@ class GradPulse(PulseSequenceElement):
 		draw_latex(text,self.pulse_sequence,(xcoor,int(y + 3)),yplacement='below')
 
 class WideGradPulse(GradPulse):
-	def __init__(self,name,channel):
-		GradPulse.__init__(self,name,channel)
+	def __init__(self,parent):
+		GradPulse.__init__(self,parent)
 		self._type = 'pfg_wide'
 		self.end_anchor = None
 		self.template = None
@@ -1650,9 +1790,9 @@ class WideGradPulse(GradPulse):
 		
 	def draw(self,psdraw):
 		if not self.alternated:
-			PulseSequenceElement.draw_pegged_pulse(self,psdraw)
+			Element.draw_pegged_pulse(self,psdraw)
 
-class PulseSequence:
+class PulseSequence(Node):
 	"""Toplevel pulse sequence object
 	"""
 	def __init__(self):
@@ -1661,6 +1801,7 @@ class PulseSequence:
 
 		most global drawing parameters entered here
 		"""
+		Node.__init__(self,parent=None)
 		self._object_type_list = ('pfg','pfg_wide','rf_pulse','rf_wide_pulse',
 								'acq','phase')
 		for ot in self._object_type_list:
@@ -1672,7 +1813,7 @@ class PulseSequence:
 		self.dimensions = util.HashableArray()
 		self.pfg_channels = util.HashableArray()
 		self.rf_channels = util.HashableArray()
-		self.delays = []
+		self.delays = {} 
 
 		#some constant drawing parameters
 		self.channel_drawing_height = 35 
@@ -1690,20 +1831,94 @@ class PulseSequence:
 		self.fg_color = 0
 		self.bg_color = 256
 
+	def procure_delay(self,name,source=None):
+		if self.delays.has_key(name):
+			dt = self.delays[name]
+		else:
+			#here I have duplication name goes both to DelayElement()
+			#and and self.delays[name], not sure if there is a good way
+			#to avoid this
+			dt = DelayElement(name)
+			self.delays[name] = dt
+		return dt.create_instance(source=source)
+
+	def add_event(self,event_source=None):#PulseSequence.add_event()
+		#currently supports only adding event from pulse script source
+		#source are monkey-patched CodeItem objects - be careful
+
+		if event_source == None:
+			raise Exception('internal error: adding events only implemented for pulse script')
+
+		event_type = event_source.event_type
+
+		#note that rf events are added as instances - no elements
+		#that's because properties of rf pulses will be set
+		#via selectors, not via names
+		ch_name = event_source.channel
+		ch_type = event_source.event_type
+
+		channel = self.procure_channel(ch_name,ch_type)
+
+		event.channel = channel
+
+		#here I need to clearly set what is parent of what
+		#because it affects the object tree
+
+		if event_source.is_wide_event():
+			if event_type == 'rf':
+				pulse_type = event_source.pulse_type()
+				#eveng here is directly instance
+				event = WidePulseInstance(parent=self,source=event_source)
+			elif event_type == 'pfg':
+				event = WideGradient(parent=self)
+				wp_start = wide_pulse.start_event
+				wp_end = wide_pulse.end_event
+
+				sa_src = event_source.start_anchor_source()
+				(sa_name,sa_num) = sa_src.anchor_id()
+				start_anchor = self.get_anchor(sa_name,sa_num)
+				start_anchor.add_event(wp_start)
+
+				ea_src = event_source.end_anchor_source()
+				(ea_name,ea_num) = sa_src.anchor_id()
+				end_anchor = self.get_anchor(sa_name,sa_num)
+				end_anchor.add_event(wp_event)
+
+			else:
+				pulse = PulseInstance(parent=self,source=event_source)
+				a_src = event_source.anchor_source()
+				a_name = a_src.anchor_name()
+				a_num = a_src.anchor_num()
+				anchor = self.get_anchor(a_name,a_num)
+				anchor.add_event(pulse)
+			pulse.type = pulse_type
+		elif event_type == 'pfg':
+			pass
+		else:
+			raise Exception('internal error - unknown event type %s' % event_type)
+
+	def procure_channel(self,name,type):
+		if type not in ('rf','pfg'):
+			raise Exception('internal error')
+		table_key = type + '_channels'
+		table = self.__dict__[table_key]
+		if name in table:
+			return table[name]
+		else:
+			channel = Channel(name,type,parent=self)
+			table[name] = channel
+			return channel
+
 	def append_anchor_group(self,name,size=None,source=None):
 		self.insert_anchor_group(name,size=size,source=source)
 
 	def insert_anchor_group(self,name,pos=-1,size=None,source=None):
 		"""creates new anchor group, populates it with anchors 
 		"""
-		g = AnchorGroup(name,source=source)
-		#add g.pulse_sequence here?
-		self.anchor_groups.insert(key=name,value=g)
+		g = AnchorGroup(name,parent=self,source=source)
+		self.anchor_groups[name]=g
 		for i in range(size):
-			a_name = '%s%d' % (name,i+1)
-			a = Anchor(a_name)
-			a.set_group(g)
-			g.append_anchor(a)
+			g.append_anchor()
 
 	def time(self): #PulseSequence.time()
 		for g in self._glist:
@@ -1949,14 +2164,8 @@ class PulseSequence:
 		return table
 						
 
-	def get_anchor(self,a_name):
-		for g in self._glist:
-			try: 
-				a = g.get_anchor(a_name)
-				return a
-			except:
-				pass
-		raise 'anchor %s not found' % a_name
+	def get_anchor(self,name,index):
+		return self.anchor_groups[name][index]
 
 	def get_image_object(self):
 		return self._image
@@ -2016,7 +2225,7 @@ class PulseSequence:
 			if template_table.has_key(obj_key):
 				template = template_table[obj_key]
 			else:
-				template = PulseSequenceElementTemplate(type,obj_key)
+				template = ElementTemplate(type,obj_key)
 				template_table[obj_key] = template
 
 			obj.template = template
@@ -2340,7 +2549,7 @@ class PulseSequence:
 				#todo problem: channels don't need template, but who cares....(for now)
 				#dimensions don't have templates either
 				if obj.template == None:
-					obj.template = PulseSequenceElementTemplate(type,obj_name)
+					obj.template = ElementTemplate(type,obj_name)
 
 				for key in par.keys():
 					var_type = ''
@@ -3506,7 +3715,7 @@ class PulseSequence:
 	
 	def __str__(self):
 		lines = []
-		for g in self._glist:
+		for g in self.anchor_groups:
 			lines.append(g.__str__())
 		return '\n'.join(lines)
 
