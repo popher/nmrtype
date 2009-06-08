@@ -1,7 +1,7 @@
 #!/usr/bin/python
 import sys
 import os
-import util
+from util import HashableArray, ParsingError
 
 #including slash in the end use blank if all is in paths
 #settings for 1&1
@@ -136,13 +136,6 @@ class POMError(Exception):
 	def __str__(self):
 		return self.msg + self.item.source
 
-class ParsingError:
-	text =  None
-	def __init__(self,text):
-		self.text = blanks_re.sub(' ',text)
-	def __str__(self):
-		print 'parsing error - ' , self.text
-
 class CompilationError:
 	text =  None
 	def __init__(self,text):
@@ -150,22 +143,6 @@ class CompilationError:
 	def __str__(self):
 		print 'compilation error - ' , self.text
 
-class ChannelCodeParsingError:
-	channel_name = None
-	channel_text = None
-	error_text = None
-	def __init__(self,ch_name,ch_text,error_text):
-		self.channel_name = ch_name
-		self.channel_text = ch_text
-		self.error_text = blanks_re.sub(' ',error_text)
-
-	def __str__(self):
-		print 'Error parsing pulse sequence for channel %s' \
-			% (self.channel_name)
-		print self.error_text
-		print 'Problem line:'
-		print 'channel %s: %s' % (self.channel_name,self.channel_text)
-	
 class FunctionVar:
 	"""DAO type class for function type variables in PulseScript
 	"""
@@ -880,8 +857,12 @@ class Dimension(Node):
 		self.template = None
 
 class Channel(Node):
-	def __init__(self,name,type,parent=None):
+	def __init__(self,name,type,parent=None,source=None):
 		Node.__init__(self,parent)
+
+		self.source = []#keeps all the channel lines
+		self.source.append(source)
+
 		self.type = type
 		self.name = name
 		self.height_above = None
@@ -891,6 +872,10 @@ class Channel(Node):
 		self.template = None #todo remove this 
 		self.label = None #initialized by _parse_variables
 		self._compile_wide_event_status = 'off'
+
+	def add_source(self,source):
+		self.source.append(source)
+
 	def prepare_label(self):
 		text = self.name
 		if self.label != None:
@@ -1192,24 +1177,28 @@ class Phase:#phase is no more pulse sequence element
 		str = str + ' ' + self.table.__str__()
 		return str
 
-class ElementInstance(Node):
-	def __init__(self,parent,source=None):
+class Event(Node):
+	def __init__(self,parent=None,source=None):
 		Node.__init__(self,parent)
 		self.source = source
 		self.anchor = None
 
-class WideElementInstance(ElementInstance):
+class WideEvent(Event):
 	def __init__(self,parent,source=None):
-		ElementInstance.__init__(self,parent,source=source)
+		Event.__init__(self,parent,source=source)
 		self.__delattr__('anchor')
+		self.start = Event(source=source)
+		self.end = Event(source=source)
+	
+class DelayEvent(Event):
+	def __init__(self,name,parent=None,source=None):
+		Event.__init__(self,parent=parent,source=source)
+		self.__delattr__('anchor')
+		self.name = name
 		self.start_anchor = None
 		self.end_anchor = None
 
-class DelayInstance(WideElementInstance):
-	def __init__(self,parent,source=None):
-		WideElementInstance.__init__(self,parent,source=source)
-
-class DelayElement(Element):
+class Delay(Element):
 	def __init__(self,name,expr=None,parent=None):
 		Element.__init__(self,parent=parent)
 		self.name = name      #this element has the name parameter
@@ -1233,7 +1222,7 @@ class DelayElement(Element):
 		return '%s label=%s formula=%s' % (self.name,self.label,expr)
 
 	def create_instance(self,source=None):
-		d = DelayInstance(self,source=source)
+		d = DelayEvent(self,source=source)
 		return d
 
 	def get_primary_delay_list(self): #Delay.get_primary_delay_list()
@@ -1318,117 +1307,6 @@ class DelayElement(Element):
 				raise 'internal error. wrong value of Delay.template.hide'
 		else:
 			return False
-
-class Delay(Element):
-	def __init__(self,name,expr=None):
-		Element.__init__(self)
-		self._type = 'delay'
-		self.type = 'general' #todo remove? plug in better POM
-		self.length = None    #length of delay in seconds
-		self.name = name
-		self.label = None
-		self.formula = None
-		self.show_at = None #channel at which to draw delay
-		self.start_anchor = None
-		self.end_anchor = None
-		self.expr = expr #delay expression assignment in constructor
-		self.label_yoffset = 0
-		self.image = None #image object
-		self.template = ElementTemplate('delay',name)
-		#start_anchor
-		#end_anchor assinged in PulseSequence._attach_delays_to_anchors()
-
-	def __str__(self):
-		if self.expr:
-			expr = ' expression=%s' % self.expr.get_eqn_str()
-		else:
-			expr = self.name
-		#used to print out formula, but so far it's empty anyway
-		return '%s label=%s formula=%s' % (self.name,self.label,expr)
-
-	def get_primary_delay_list(self): #Delay.get_primary_delay_list()
-		if self.expr == None:
-			return [self]
-		else:
-			return self.expr.get_primary_delay_list()
-
-	def get_eqn_str(self):
-		#if delay expression evaluates to None, then this delay is primary parameter
-		#and needs to be set externally by the spectroscopist
-		if self.expr == None:
-			return Element.get_eqn_str(self)
-		else:
-			return self.expr.get_eqn_str()
-
-	def get_varian_code(self):
-		expr = self.get_varian_expression()
-		try:
-			if float(expr) == 0:
-				return []
-		except:
-			return ['\tdelay(%s);' % expr]
-
-	def set_xcoor(self,xcoor): #Delay.set_xcoor()
-		"""set x coordinate of delay
-		"""
-		self.xcoor = xcoor
-
-	def calc_drawing_width(self): #Delay.calc_drawing_width()
-		"""if delay is hidden, then default width is returned
-		otherwise an image is generated from label
-		then the resulting value taken directly from the image width
-		"""
-		if self.is_hidden():
-			self.drawing_width = 10 #todo magic number
-			return
-		if self.label:
-			text = self.label
-		else:
-			text = self.name
-		self.image = latex2image(text)
-		self.drawing_width = self.image.size[0]
-
-	def draw_bounding_tics(self):#Delay.draw_bounding_tics()
-		"""a tic mark will be drawn on a side where anchor has no attached events
-		"""
-		start = self.start_anchor
-		end = self.end_anchor
-		start.draw_tic(self.show_at)
-		end.draw_tic(self.show_at)
-
-	def draw(self,draw_obj): #Delay.draw()
-		"""this routine is really drawing a delay label text, and does nothing if 
-		delay is "hidden"
-		"""
-
-		if self.is_hidden():
-			return
-
-		if self.label:
-			text = self.label
-		else:
-			text = self.name
-		self.ycoor = self.pulse_sequence.get_rf_channel_ycoor(self.show_at) \
-						- self.pulse_sequence.channel_drawing_height/2 \
-						- int(self.label_yoffset)
-
-		image_obj = self.pulse_sequence.get_image_object()
-		#delay label xplacement is 'center'
-		paste_image(self.image,self.pulse_sequence,(self.xcoor,self.ycoor),'center-clear','center')
-
-		self.draw_bounding_tics()
-
-	def is_hidden(self):
-		if self.template.__dict__.has_key('hide'):
-			if self.template.hide == False:
-				return False
-			elif self.template.hide == True:
-				return True
-			else:
-				raise 'internal error. wrong value of Delay.template.hide'
-		else:
-			return False
-
 
 class WideEventToggle(Element):
 	"""class for turning on/off wide event
@@ -1535,11 +1413,11 @@ class VSimPulse:
 		text = '%s%s,%s);' % (text,events[0].gt1,events[0].gt2) #temporary plug
 		return text
 
-class PulseInstance(ElementInstance):
+class PulseEvent(Event):
 	"""class for RF pulse
 	"""
 	def __init__(self,parent,source=None):
-		ElementInstance.__init__(self,parent,source=source)
+		Event.__init__(self,parent,source=source)
 		self._type = 'rf_pulse'
 		#self.type = type #90,180, shp, rect, lp, etc
 		#self.name = name
@@ -1644,10 +1522,9 @@ class PulseInstance(ElementInstance):
 			draw_latex(text,seq,coor,yplacement='above')
 			
 
-class WidePulseInstance(WideElementInstance):
+class WidePulseEvent(WideEvent):
 	def __init__(self,parent,source=None):
-		WideElementInstance.__init__(self,parent,source=source)
-		self._type = 'rf_wide_pulse'
+		WideEvent.__init__(self,parent,source=source)
 		self.label = None
 		self.h1 = 100 #default 100% start height
 		self.h2 = 100 #default 100% end height
@@ -1680,11 +1557,10 @@ class WidePulseInstance(WideElementInstance):
 	def draw(self,draw_obj):
 		Element.draw_pegged_pulse(self,draw_obj)
 
-class Acquisition(WideElementInstance):
+class Acquisition(WideEvent):
 	def __init__(self,channel,name=None):
 		type = 'acq'
 		WidePulse.__init__(self,type,channel,name=None)
-		self._type = 'acq'
 		self.type = 'fid' 
 		self.end_anchor = None
 		#display type: 'fid' or 'echo'
@@ -1698,15 +1574,15 @@ class Acquisition(WideElementInstance):
 		elif self.type == 'echo':
 			Element.draw_echo_fid(self,draw_obj)
 
-class GradPulse(Element):
-	def __init__(self,parent):
-		ElementInstance.__init__(self,parent)
-		self._type = 'pfg'
+class GradEvent(Event):
+	def __init__(self,parent,source=None):
+		Event.__init__(self,parent,source=source)
 		self.type = 'shaped'#shaped or rectangular
 		self.alternated = False
-		self.name = name
+		self.name = None 
+		self.sign = 1
 		self.label = None
-		self.channel = channel
+		self.channel = None
 		self.length = None
 		self.strength = 100
 		self.drawing_height = None
@@ -1773,12 +1649,13 @@ class GradPulse(Element):
 			text = self.label
 		draw_latex(text,self.pulse_sequence,(xcoor,int(y + 3)),yplacement='below')
 
-class WideGradPulse(GradPulse):
-	def __init__(self,parent):
-		GradPulse.__init__(self,parent)
-		self._type = 'pfg_wide'
+class WideGradEvent(WideEvent):
+	def __init__(self,parent,source=None):
+		WideEvent.__init__(self,parent,source=source)
 		self.end_anchor = None
 		self.template = None
+		self.name = None
+		self.sign = 1
 		self.h1 = None
 		self.h2 = None
 		self.drawing_width = 0
@@ -1802,20 +1679,15 @@ class PulseSequence(Node):
 		most global drawing parameters entered here
 		"""
 		Node.__init__(self,parent=None)
-		self._object_type_list = ('pfg','pfg_wide','rf_pulse','rf_wide_pulse',
-								'acq','phase')
-		for ot in self._object_type_list:
-			self.__dict__[ot + '_table'] = {} #???is this duplication of below code?
 
-		self._draft_image_no = 0
-
-		self.anchor_groups = util.HashableArray()
-		self.dimensions = util.HashableArray()
-		self.pfg_channels = util.HashableArray()
-		self.rf_channels = util.HashableArray()
+		self.anchor_groups = HashableArray()
+		self.dimensions = HashableArray()
+		self.pfg_channels = HashableArray()
+		self.rf_channels = HashableArray()
 		self.delays = {} 
 
 		#some constant drawing parameters
+		self._draft_image_no = 0
 		self.channel_drawing_height = 35 
 		self.acq_drawing_width = 70
 		self.acq_drawing_height = 35
@@ -1831,83 +1703,83 @@ class PulseSequence(Node):
 		self.fg_color = 0
 		self.bg_color = 256
 
-	def procure_delay(self,name,source=None):
-		if self.delays.has_key(name):
-			dt = self.delays[name]
-		else:
-			#here I have duplication name goes both to DelayElement()
-			#and and self.delays[name], not sure if there is a good way
-			#to avoid this
-			dt = DelayElement(name)
-			self.delays[name] = dt
-		return dt.create_instance(source=source)
+	#methods PulseSequence.add_... use pulse script source as option
+	#should also support
+	def add_delay(self,source=None):#PulseSequence.add_delay()
+		name = source.source()
+		delay = DelayEvent(name,parent=self,source=source)
+		return delay
 
 	def add_event(self,event_source=None):#PulseSequence.add_event()
 		#currently supports only adding event from pulse script source
 		#source are monkey-patched CodeItem objects - be careful
+
+		#PulseSequence.add_event() - is one of the few methods building the pulse sequence
+		#this method adds element instances only
+		#elements themselves are collected just before the timing (rendering) stage
 
 		if event_source == None:
 			raise Exception('internal error: adding events only implemented for pulse script')
 
 		event_type = event_source.event_type
 
-		#note that rf events are added as instances - no elements
-		#that's because properties of rf pulses will be set
-		#via selectors, not via names
-		ch_name = event_source.channel
-		ch_type = event_source.event_type
-
-		channel = self.procure_channel(ch_name,ch_type)
-
-		event.channel = channel
-
 		#here I need to clearly set what is parent of what
 		#because it affects the object tree
-
 		if event_source.is_wide_event():
 			if event_type == 'rf':
-				pulse_type = event_source.pulse_type()
 				#eveng here is directly instance
-				event = WidePulseInstance(parent=self,source=event_source)
+				event = WidePulseEvent(parent=self,source=event_source)
 			elif event_type == 'pfg':
-				event = WideGradient(parent=self)
-				wp_start = wide_pulse.start_event
-				wp_end = wide_pulse.end_event
-
-				sa_src = event_source.start_anchor_source()
-				(sa_name,sa_num) = sa_src.anchor_id()
-				start_anchor = self.get_anchor(sa_name,sa_num)
-				start_anchor.add_event(wp_start)
-
-				ea_src = event_source.end_anchor_source()
-				(ea_name,ea_num) = sa_src.anchor_id()
-				end_anchor = self.get_anchor(sa_name,sa_num)
-				end_anchor.add_event(wp_event)
-
+				event = WideGradientEvent(event_name,parent=self,source=event_source)
 			else:
-				pulse = PulseInstance(parent=self,source=event_source)
-				a_src = event_source.anchor_source()
-				a_name = a_src.anchor_name()
-				a_num = a_src.anchor_num()
-				anchor = self.get_anchor(a_name,a_num)
-				anchor.add_event(pulse)
-			pulse.type = pulse_type
-		elif event_type == 'pfg':
-			pass
-		else:
-			raise Exception('internal error - unknown event type %s' % event_type)
+				raise Exception('internal error')
 
-	def procure_channel(self,name,type):
+			sa_src = event_source.start_anchor_source()
+			self.get_anchor(source=sa_src).add_event(event.start)
+
+			ea_src = event_source.end_anchor_source()
+			self.get_anchor(source=ea_src).add_event(event.end)
+		else:
+			if event_type == 'rf':
+				event = PulseEvent(parent=self,source=event_source)
+			elif event_type == 'pfg':
+				event = GradEvent(parent=self,source=event_source)
+			else:
+				raise Exception('internal error')
+				
+			a_src = event_source.anchor_source()
+			self.get_anchor(source=a_src).add_event(event)
+
+		if event_type == 'rf':
+			pulse_type = event_source.pulse_type()
+			event.type = pulse_type
+		else:
+			event.name = event_source.pfg_name()
+			event.sign = event_source.pfg_sign()
+
+		ch_name = event_source.channel
+		channel = self.get_channel(ch_name,event_type)
+		event.channel = channel
+
+	def add_channel(self,type=None,source=None):
 		if type not in ('rf','pfg'):
 			raise Exception('internal error')
+
+		name = source.source()
+
+		if type == 'rf' and name in self.pfg_channels:
+			raise ParsingError('already have pfg channel %s, cant add it as rf channel' % name, source)
+		elif type == 'pfg' and name in self.rf_channels:
+			raise ParsingError('already have rf channel %s, cant add it as pfg channel' % name, source)
+
 		table_key = type + '_channels'
 		table = self.__dict__[table_key]
-		if name in table:
-			return table[name]
-		else:
-			channel = Channel(name,type,parent=self)
+		if name not in table:
+			#PulseSequence is Channel's parent
+			channel = Channel(name,type,parent=self,source=source)
 			table[name] = channel
-			return channel
+		else:
+			table[name].add_source(source)
 
 	def append_anchor_group(self,name,size=None,source=None):
 		self.insert_anchor_group(name,size=size,source=source)
@@ -2058,9 +1930,6 @@ class PulseSequence(Node):
 			events.extend(g_events)
 		return events
 
-	def add_delay(self,dly):
-		self._delay_list.append(dly)
-
 	def get_channel_key(self,channel=None):
 		"""performs check of channel key returns what's on input
 		or first rf channel if channel == Null
@@ -2090,26 +1959,13 @@ class PulseSequence(Node):
 		else:
 			raise ParsingError("There is no rf channel '%s'" % name)
 
-	def get_pfg_channel(self,name): #need to be merged into one get_channel
-	#todo here is a catch - only rf channels are returned
-		ct = self._pfg_channel_table
-		if ct.has_key(name):
-			return ct[name]
-		else:
-			raise ParsingError("There is no pfg channel '%s'" % name)
-
-	def get_channel(self,name):
+	def get_channel(self,name,type):
 		"""return channel data by name
 		will raise error if channel is not found
 		"""
-		try:
-			ch = self.get_rf_channel(name)
-		except:
-			try:
-				ch = self.get_pfg_channel(name)
-			except:
-				raise ParsingError("channel %s not found in rf & pfg channel lists" % name)
-		return ch
+		table_name = type + '_channels'
+		table = self.__dict__[table_name]
+		return table[name]
 
 	def is_wide_event_on(self):
 		for ch in self._rf_channel_table.values() + self._pfg_channel_table.values():
@@ -2164,8 +2020,17 @@ class PulseSequence(Node):
 		return table
 						
 
-	def get_anchor(self,name,index):
-		return self.anchor_groups[name][index]
+	def get_anchor(self,name=None,index=None,source=None):
+		if (name!=None or index!=None) and source != None:
+			raise Exception('internal error')
+		if source != None:
+			(name,index) = source.id_anchor()
+			try:
+				return self.anchor_groups[name][index]
+			except:
+				ParsingError('cannot find anchor %s' % source.source(),source)
+		else:
+			return self.anchor_groups[name][index]
 
 	def get_image_object(self):
 		return self._image
@@ -2182,236 +2047,6 @@ class PulseSequence(Node):
 
 	def get_anchor_group(self,name=None):
 		return self.anchor_groups.get(key=name)
-
-	def _procure_object(self,type,*arg,**kwarg):
-	#unnamed objects won't be stored in tables
-
-		if not type in self._object_type_list:
-			raise '_procure_object for type %s not implemented' % type
-
-		class_map = {'rf_pulse':Pulse,'rf_wide_pulse':WidePulse,
-						'acq':Acquisition,'pfg':GradPulse,'pfg_wide':WideGradPulse,'phase':Phase}
-
-		obj_class = class_map[type]
-
-		table_name = type + '_template_table'
-		if not self.__dict__.has_key(table_name):
-			self.__dict__[table_name] = {}
-		template_table = self.__dict__[table_name]
-
-		#get object table
-		table = self.__dict__[type + '_table']
-		#get object key
-		obj_key = None
-		if type in ('rf_pulse','acq','rf_wide_pulse'):
-			if kwarg.has_key('name'):
-				obj_key = kwarg['name']
-		elif type in ('pfg','phase','pfg_wide'):
-			if len(arg) > 0:
-				obj_key = arg[0]
-
-		#create a new object
-		try:
-			obj = obj_class(*arg,**kwarg)
-		except:
-			err = 'could not create object of type %s\n' % type
-			err = err + 'argument list: ' + arg.__str__() + '\n'
-			err = err + 'argument table: ' + kwarg.__str__()
-			raise err
-
-		#obj_key is name of new object
-		if obj_key:
-			template = None
-			if template_table.has_key(obj_key):
-				template = template_table[obj_key]
-			else:
-				template = ElementTemplate(type,obj_key)
-				template_table[obj_key] = template
-
-			obj.template = template
-
-		table[obj_key] = obj
-		return obj
-
-	def _validate_anchor_order(self,code):
-		#todo get this done before release
-		pass
-
-	def _parse_time(self):
-		"""parses code of "time" line
-
-		builds list of delays, to anchor groups assigns: post-delay, 
-		timed and timing anchors
-
-		validation: anchor order, start with delay, end with anchor, anchors
-		and delays must alternate, delays and anchors subject to pattern matching
-		"""
-		#first lex the time line
-		#sequence must start with delay and end with anchor
-		code = self._code['time'].code
-		group_list = self._glist
-
-		self._validate_anchor_order(code)
-
-		t = label_regex_token
-		anchor_re = re.compile(r'^@(%s)((,|-+)(%s))?$' % (t,t))
-		delay_re = re.compile(r'^%s$' % t)
-
-		bits = code.split()
-		if anchor_re.match(bits[0]):
-			raise ParsingError('first item in the time line must be delay, %s found' % bits[0])
-		if not anchor_re.match(bits[-1]):
-			raise ParsingError('last item in the time line must be anchor, %s found' % bits[0])
-
-		items = []
-		#prev item name and type
-		pname = 'OriginAnchor'
-		ptype = 'anchor' #thats the implied zero time anchor
-		#group bits into anchors and delays
-		#delays and anchors must alternate
-		for bit in bits:
-			am = anchor_re.match(bit)
-			dm = delay_re.match(bit)
-			if am:
-				a1_name = am.group(1)
-				a2_name = am.group(4)
-				if ptype == 'anchor':
-					raise ParsingError('two anchors %s and %s found in a row. '\
-										% (pname,bit) \
-										+'Anchors and delays must alternate.')
-				item = None
-				if a2_name:
-					item = {'type':'double-anchor','name':a1_name,'name2':a2_name}
-				else:
-					item = {'type':'anchor','name':a1_name}
-
-				items.append(item)
-				ptype = 'anchor'
-			elif dm:
-				if ptype == 'delay':
-					raise ParsingError('two delays %s and %s found in a row. '\
-									% (pname,bit) \
-								+'Delays must alternate with anchors.')
-				items.append({'type':'delay','name':bit})
-				ptype = 'delay'
-			else:
-				raise ParsingError('did not recognize entry %s either delay symbol ' % bit \
-									+ 'or two-anchor group expected: e.g. @a,b')
-			pname = bit
-			
-		c_group = group_list[0]
-		for item in items:
-			if item['type'] == 'delay':
-				d = Delay(item['name'])
-				self._delay_list.append(d)
-				c_group.post_delay = d 
-			elif item['type'] in ('anchor','double-anchor'):
-				a1_name = item['name']
-				a2_name = None
-				if item['type'] == 'double-anchor':
-					a2_name = item['name2']
-				c_group = self.get_anchor(a1_name).group
-				c_group.set_timed_anchor(a1_name)
-				if a2_name:
-					c_group.set_timing_anchor(a2_name)
-				else:
-					c_group.set_timing_anchor(a1_name)
-
-	def _parse_pfg(self):
-		code_table = self._code['pfg'].table
-		self._pfg_channel_order = self._code['pfg'].item_order
-		t = label_regex_token
-		pfg_re = re.compile(r'^(%s)@(%s)((,|-+)(%s))?$' % (t,t,t))
-
-		for ch in code_table.keys():
-			
-			self._pfg_channel_table[ch] = Channel(ch,'pfg')
-
-			code = code_table[ch]
-			self._validate_anchor_order(code)
-
-			bits = code.split()
-			for bit in bits:
-				m = pfg_re.match(bit)
-				if m:
-					pfg_name = m.group(1)
-					a1_name = m.group(2)
-					a2_name = m.group(4)
-					a1 = self.get_anchor(a1_name)
-
-					pfg_event = None 
-					if a2_name:
-						a2 = self.get_anchor(a2_name)
-						pfg_event = self._procure_object('pfg_wide',pfg_name,ch)
-						pfg_event.end_anchor = a2
-					else:
-						pfg_event = self._procure_object('pfg',pfg_name,ch)
-					pfg_event.anchor = a1
-					a1.add_event(pfg_event) #need to check whether end anchor has compatible event
-				else:
-					raise ParsingError('misformed pfg statement %s' % bit)
-
-	def _parse_dim(self):
-		code_table = self._code['dim'].table
-		self._dim_order = self._code['dim'].item_order
-		for dim_name in code_table.keys():
-			self._dim_table[dim_name] = Dimension(dim_name)
-
-	def _parse_rf(self):
-		"""parses the main part of pulse sequence record: channel events
-		"""
-		code_table = self._code['rf'].table
-		self._rf_channel_order = self._code['rf'].item_order
-
-		t = label_regex_token
-		pulse_re = re.compile(r'^(shp|90|180|lp|rect)@(%s)(=(%s))?$' \
-								% (t,t))
-		w_rf_event_re = re.compile(r'^(acq|cpd|wp)@(%s)((,|-+)(%s))(=(%s))?$' \
-								% (t,t,t))
-
-		for ch in code_table.keys():
-
-			self._rf_channel_table[ch] = Channel(ch,'rf')
-
-			code = code_table[ch]
-			self._validate_anchor_order(code)
-
-			bits = code.split()
-
-			for bit in bits:
-				pm = pulse_re.match(bit)
-				wm = w_rf_event_re.match(bit)
-				if pm:
-					pulse_type = pm.group(1)
-					a_name = pm.group(2)
-					pulse_name = pm.group(4)
-					if not pulse_name:
-						pulse_name = pulse_type
-					p = self._procure_object('rf_pulse',pulse_type,ch,name=pulse_name)
-					a = self.get_anchor(a_name)
-					a.add_event(p)
-
-				elif wm:
-					event_type = wm.group(1)
-					start_a_name = wm.group(2)
-					end_a_name = wm.group(5)
-					event_name = wm.group(7)
-
-					#here is where type of event should be
-					#distinguished depending on what comes before @
-					if event_type == 'acq':
-						event = self._procure_object('acq',ch,name=event_name)
-					else:
-						event = self._procure_object('rf_wide_pulse',
-										event_type,ch,
-										name=event_name)
-					sa = self.get_anchor(start_a_name)
-					ea =  self.get_anchor(end_a_name)
-					sa.add_event(event)
-					ea.add_event(event)
-				else:
-					raise ParsingError('misformed pulse statement %s in rf channel \'%s\'' \
-										% (bit,ch))
 
 	def _get_anchored_object_list(self,type,name):
 		type_map = {'pulses':('rf_pulse'),

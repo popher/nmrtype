@@ -1,20 +1,11 @@
 from pom import PulseSequence
 import functools
 import sys
-import util
+from util import ParsingError, HashableArray
 import types
 from pyparsing import ParseResults,White,Word,Literal,srange,nums,Group,\
 	alphas,Optional,OneOrMore,LineEnd,alphanums,ZeroOrMore,lineno,col,\
 	Regex
-
-class ParsingError(Exception):
-	def __init__(self,msg,*items):
-		self.msg = msg
-		self.items = items 
-	def __str__(self):
-		out = [t.info() for t in self.items]
-		return 'parsing error: %s\nproblem item(s):\n%s' \
-			% (self.msg,'\n'.join(out))
 
 def tok2str(tok):
 	if isinstance(tok,ParseResults):
@@ -101,8 +92,11 @@ def AnchorPatch(target_item):
 			return 0
 		elif len(target_item)==2:
 			return int(target_item[1].source())
+	def id_anchor(target_item):
+		return (target_item.anchor_name(),target_item.anchor_num())
 	target_item.anchor_name = types.MethodType(anchor_name,target_item)
 	target_item.anchor_num = types.MethodType(anchor_num,target_item)
+	target_item.id_anchor = types.MethodType(id_anchor,target_item)
 	return target_item
 
 def EventCodePatch(target_item,channel):
@@ -183,8 +177,8 @@ class Parser:
 
 		self.anchor_group_tokens = []
 		self.time_tokens = []
-		self.rf_channel_tokens = util.HashableArray()
-		self.pfg_channel_tokens = util.HashableArray()
+		self.rf_channel_tokens = HashableArray()
+		self.pfg_channel_tokens = HashableArray()
 
 	def wrap_named_tokens(f):
 		"""filters named tokens
@@ -221,6 +215,15 @@ class Parser:
 		header = items.pop(0)
 		chan = header[0].source()
 		table_name = type + '_channel_tokens'
+
+		#this initializes channel or raises error
+		#if channel with that name exists in a different group
+		#e.g. rf channel z defined, then someone attempts to create pfg z
+		#all channels have to have different names
+		#if channel exists, nothing is done
+		self.pom.add_channel(source=header[0],type=type)
+
+		#below code keeps collecting
 		if chan in self.__dict__[table_name]:
 			table = self.__dict__[table_name][chan]
 		else:
@@ -352,8 +355,7 @@ class Parser:
 		for item in time_items:
 			name = item.getName()
 			if name == 'delay':
-				dly = item.source()
-				d = pom.procure_delay(dly,source=item)
+				d = pom.add_delay(source=item)
 				c_group.set_post_delay(d)
 			else:
 				if name == 'single_anchor':

@@ -1,3 +1,12 @@
+class ParsingError(Exception):
+	def __init__(self,msg,*items):
+		self.msg = msg
+		self.items = items 
+	def __str__(self):
+		out = [t.info() for t in self.items]
+		return 'parsing error: %s\nproblem item(s):\n%s' \
+			% (self.msg,'\n'.join(out))
+
 class HashableArray:
 	"""array, whose elements are accessible by keys
 	if they were originally stored with keys
